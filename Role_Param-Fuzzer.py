@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
 # search for # Default payloads to change default payloads
+import threading
+import binascii
+import json
+import re
+import base64
+import codecs
+import traceback
+import os
+from collections import OrderedDict
+from copy import deepcopy
 from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorController
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
@@ -13,26 +23,17 @@ from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimen
 from java.awt.event import MouseAdapter, ActionListener, MouseEvent, FocusAdapter, KeyAdapter, KeyEvent
 from java.util import ArrayList
 from javax.swing.event import ChangeListener
-# from java.awt import Rectangle, Robot
-import threading
-import binascii
-import json
-import re
-import base64
 from java.lang import Boolean
 from java.io import File
-from collections import OrderedDict
-from java.io import File
 from javax.imageio import ImageIO
-import codecs, os
 from java.net import URL
-from copy import deepcopy
 
 ### ---------bac
 # Global per-host BAC config storage
 BAC_HOST_CONFIGS = {}
 LAST_EXPORT_DIR_KEY = "last-export-directory"
 LAST_POC_EXPORT_DIR_KEY = "last-poc-export-directory"
+LAST_BAC_ROLE_DIR_KEY = "last-bac-role-directory"
 LAST_PAYLOAD_STATE = {}
 
 def extract_json_keys_recursive(data, path="", keys=None):
@@ -355,11 +356,12 @@ class PayloadSidePanel(JPanel):
 
 ### ------------------ BAC tab ----------------------------
 class BACCheckPanel(JPanel):
-    def __init__(self, host, req_headers, on_save_callback=None):
+    def __init__(self, host, req_headers, on_save_callback=None, callbacks=None):
         JPanel.__init__(self)
         self.host = host
         self.req_headers = req_headers
         self.on_save_callback = on_save_callback
+        self.callbacks = callbacks
         self.setBorder(BorderFactory.createCompoundBorder(
             BorderFactory.createTitledBorder("BAC Check"),
             BorderFactory.createEmptyBorder(10, 10, 10, 10)
@@ -370,16 +372,119 @@ class BACCheckPanel(JPanel):
         self.role_tabs.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT)
         self.add(self.role_tabs, BorderLayout.CENTER)
 
+        # --- Export/Import BAC Roles buttons ---
+        btn_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        self.export_bac_btn = JButton("Export BAC Roles", actionPerformed=self.export_bac_roles)
+        self.import_bac_btn = JButton("Import BAC Roles", actionPerformed=self.import_bac_roles)
+        btn_panel.add(self.export_bac_btn)
+        btn_panel.add(self.import_bac_btn)
+        self.add(btn_panel, BorderLayout.NORTH)
+
         # 1. Load existing roles for this host from BAC_HOST_CONFIGS (if any)
         config = BAC_HOST_CONFIGS.get(self.host)
         if config and "roles" in config and config["roles"]:
             for role_cfg in config["roles"]:
-                # Always append, do NOT insert at plus_idx
                 self._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
             self.save_state()
-        # Add "+" button tab always last
-        self.add_plus_tab()
+        # Always add plus tab last
+        self.ensure_single_plus_tab()
         self.role_tabs.addChangeListener(self.on_tab_change)
+
+    def ensure_single_plus_tab(self):
+        # Remove any existing plus tab
+        for i in range(self.role_tabs.getTabCount() - 1, -1, -1):
+            if self.role_tabs.getTitleAt(i) == "":
+                self.role_tabs.remove(i)
+        self.add_plus_tab()
+
+    def export_bac_roles(self, event):
+        try:
+            if not self.role_data:
+                JOptionPane.showMessageDialog(self, "No BAC roles to export.")
+                return
+            # Show selection dialog
+            role_names = [role.get("label", "Role #%d" % (i+1)) for i, role in enumerate(self.role_data)]
+            # from javax.swing import JList
+            jlist = JList(role_names)
+            jlist.setSelectionInterval(0, len(role_names)-1)  # Pre-select all
+            jlist.setVisibleRowCount(min(8, len(role_names)))
+            res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select BAC roles to export", JOptionPane.OK_CANCEL_OPTION)
+            if res != JOptionPane.OK_OPTION:
+                return
+            selected_indices = jlist.getSelectedIndices()
+            if len(selected_indices) == 0:
+                JOptionPane.showMessageDialog(self, "No roles selected.")
+                return
+            export_list = [self.role_data[idx] for idx in selected_indices]
+            last_dir = load_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY) if self.callbacks else None
+            if last_dir and os.path.isdir(last_dir):
+                chooser = JFileChooser(last_dir)
+            else:
+                chooser = JFileChooser()
+            chooser.setDialogTitle("Export BAC Roles As")
+            chooser.setSelectedFile(File("bac_roles_%s.json" % self.host.replace(':', '_')))
+            if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
+                file = chooser.getSelectedFile()
+                out_path = file.getAbsolutePath()
+                if not out_path.endswith(".json"):
+                    out_path += ".json"
+                if self.callbacks:
+                    save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(out_path))
+                # import codecs, json
+                with codecs.open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(export_list, f, indent=2)
+                JOptionPane.showMessageDialog(self, "Exported %d BAC roles to:\n%s" % (len(export_list), out_path))
+        except Exception as e:
+            # import traceback
+            JOptionPane.showMessageDialog(self, "Error exporting BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
+
+    def import_bac_roles(self, event):
+        try:
+            last_dir = load_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY) if self.callbacks else None
+            if last_dir and os.path.isdir(last_dir):
+                chooser = JFileChooser(last_dir)
+            else:
+                chooser = JFileChooser()
+            chooser.setDialogTitle("Import BAC Roles (.json)")
+            if chooser.showOpenDialog(None) == JFileChooser.APPROVE_OPTION:
+                file = chooser.getSelectedFile()
+                in_path = file.getAbsolutePath()
+                if self.callbacks:
+                    save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(in_path))
+                # import codecs, json
+                with codecs.open(in_path, "r", encoding="utf-8") as f:
+                    imported = json.load(f)
+                if isinstance(imported, dict):
+                    imported = [imported]
+                if not imported:
+                    JOptionPane.showMessageDialog(self, "No BAC roles found in file.")
+                    return
+                # Show selection dialog
+                role_names = [role.get("label", "Role #%d" % (i+1)) for i, role in enumerate(imported)]
+                # from javax.swing import JList
+                jlist = JList(role_names)
+                jlist.setSelectionInterval(0, len(role_names)-1)  # Pre-select all
+                jlist.setVisibleRowCount(min(8, len(role_names)))
+                res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select BAC roles to import", JOptionPane.OK_CANCEL_OPTION)
+                if res != JOptionPane.OK_OPTION:
+                    return
+                selected_indices = jlist.getSelectedIndices()
+                if len(selected_indices) == 0:
+                    JOptionPane.showMessageDialog(self, "No roles selected.")
+                    return
+                count = 0
+                # Insert imported roles before the plus tab
+                plus_idx = self.role_tabs.getTabCount() - 1
+                for offset, idx in enumerate(selected_indices):
+                    role_cfg = imported[idx]
+                    # Insert at plus_idx + offset (so they appear before the plus tab)
+                    self._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
+                self.save_state()
+                self.ensure_single_plus_tab()  # Ensure plus tab is always present and unique
+                JOptionPane.showMessageDialog(self, "Imported %d BAC roles." % len(selected_indices))
+        except Exception as e:
+            # import traceback
+            JOptionPane.showMessageDialog(self, "Error importing BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
 
     def _add_role_tab_internal(self, label=None, config=None):
         # Used for initial load - appends at end before "+" tab
@@ -395,8 +500,11 @@ class BACCheckPanel(JPanel):
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         # Insert at plus_idx (which is at end, since only "+" at this point on init)
         self.role_tabs.insertTab(role_label, None, panel, None, plus_idx)
-        self.role_tabs.setTabComponentAt(plus_idx, ClosableTabComponent(self.role_tabs, panel, role_label, self))
-        self.role_data.append(role_cfg)
+        self.role_tabs.setTabComponentAt(plus_idx, ClosableTabComponent(self.role_tabs, panel, role_label, self, role_idx=plus_idx))
+        # Ensure enabled state is set
+        if "enabled" not in role_cfg:
+            role_cfg["enabled"] = True
+        self.role_data.insert(plus_idx, role_cfg)
         self.role_tabs.setSelectedIndex(plus_idx)
         self.save_state()
 
@@ -817,7 +925,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 self.bac_panel = BACCheckPanel(host, headers)
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
-                import traceback
+                # import traceback
                 traceback.print_exc()
                 self.bac_panel = JPanel()
                 self.bac_panel.add(JLabel("BACCheckPanel failed to load."))
@@ -1015,7 +1123,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         return text[:maxlen] + u"\n--------- Truncated ---------\n"
                     return text
 
-                import codecs
+                # import codecs
                 with codecs.open(out_path, "w", encoding="utf-8") as f:
                     f.write(u"API: %s\n\n" % api_string)
                     for idx, entry in enumerate(self.history):
@@ -1033,7 +1141,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         f.write(u"-------------------\n\n")
                 JOptionPane.showMessageDialog(self, "Exported fuzz results to:\n" + out_path)
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self, "Error exporting results:\n" + str(e) + "\n" + traceback.format_exc())
 
     def mergeResults(self, event):
@@ -1094,7 +1202,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         return text[:maxlen] + u"\n--------- Truncated ---------\n"
                     return text
 
-                import codecs
+                # import codecs
                 with codecs.open(out_path, "a", encoding="utf-8") as f:  # 'a' for append
                     tab_name = "This Tab"
                     if hasattr(self, "parent_extender") and self.parent_extender:
@@ -1118,13 +1226,13 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         f.write(u"-------------------\n\n")
                 JOptionPane.showMessageDialog(self, "Merged fuzz results into:\n" + out_path)
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self, "Error merging results:\n" + str(e) + "\n" + traceback.format_exc())
 
     def exportAllTabs(self, event):
         try:
-            import os
-            import codecs
+            # import os
+            # import codecs
 
             # Try to get Burp project name
             project_name = "all_fuzz_results"
@@ -1221,7 +1329,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             f.write(u"-------------------\n\n")
                 JOptionPane.showMessageDialog(self, "Exported all fuzz results to:\n" + out_path)
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self, "Error exporting all results:\n" + str(e) + "\n" + traceback.format_exc())
 
     def mergeAllTabs(self, event):
@@ -1301,7 +1409,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             f.write(u"-------------------\n\n")
                 JOptionPane.showMessageDialog(self, "Merged all fuzz results into:\n" + out_path)
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self, "Error merging all results:\n" + str(e) + "\n" + traceback.format_exc())
 
     def exportTabsForImport(self, event):
@@ -1318,7 +1426,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 JOptionPane.showMessageDialog(self, "No tabs to export.")
                 return
 
-            from javax.swing import JList
+            # from javax.swing import JList
             jlist = JList(tab_titles)
             jlist.setSelectionInterval(0, 0)  # Pre-select first
             jlist.setVisibleRowCount(min(8, len(tab_titles)))
@@ -1357,7 +1465,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     json.dump(export_list, f, indent=2)
                 JOptionPane.showMessageDialog(self, "Exported %d tabs for import:\n%s" % (len(export_list), out_path))
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self, "Error exporting tabs:\n" + str(e) + "\n" + traceback.format_exc())
 
     def importTabsFromFile(self, event):
@@ -1378,14 +1486,31 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 # Support both single tab and list of tabs
                 if isinstance(imported, dict):
                     imported = [imported]
+                if not imported:
+                    JOptionPane.showMessageDialog(self, "No tabs found in file.")
+                    return
+                # Show selection dialog
+                tab_names = [tab.get("tab_name", "Tab #%d" % (i+1)) for i, tab in enumerate(imported)]
+                # from javax.swing import JList
+                jlist = JList(tab_names)
+                jlist.setSelectionInterval(0, len(tab_names)-1)  # Pre-select all
+                jlist.setVisibleRowCount(min(8, len(tab_names)))
+                res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select tabs to import", JOptionPane.OK_CANCEL_OPTION)
+                if res != JOptionPane.OK_OPTION:
+                    return
+                selected_indices = jlist.getSelectedIndices()
+                if len(selected_indices) == 0:
+                    JOptionPane.showMessageDialog(self, "No tabs selected.")
+                    return
                 count = 0
-                for tab_data in imported:
+                for idx in selected_indices:
+                    tab_data = imported[idx]
                     if hasattr(self, "parent_extender") and self.parent_extender and hasattr(self.parent_extender, "add_fuzzer_tab_with_state"):
                         self.parent_extender.add_fuzzer_tab_with_state(tab_data)
                         count += 1
                 JOptionPane.showMessageDialog(self, "Imported %d tabs." % count)
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self, "Error importing tabs:\n" + str(e) + "\n" + traceback.format_exc())
 
     def serialize(self):
@@ -1493,17 +1618,23 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             obj.bac_panel.add(JLabel("NO HEADERS FOUND. Load or send a real request."))
         else:
             try:
-                obj.bac_panel = BACCheckPanel(host, headers)
+                obj.bac_panel = BACCheckPanel(host, headers, callbacks=callbacks)
                 # Restore BAC roles if present
                 if "bac_roles" in data and hasattr(obj.bac_panel, "role_data"):
                     obj.bac_panel.role_data = []
                     obj.bac_panel.role_tabs.removeAll()
                     for role_cfg in data["bac_roles"]:
+                        if not isinstance(role_cfg, dict):
+                            print("[-] Skipping invalid BAC role (not a dict):", role_cfg)
+                            continue
                         obj.bac_panel._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
                     obj.bac_panel.save_state()
+                # Always ensure plus tab is present after restore
+                if hasattr(obj.bac_panel, "ensure_single_plus_tab"):
+                    obj.bac_panel.ensure_single_plus_tab()
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
-                import traceback
+                # import traceback
                 traceback.print_exc()
                 obj.bac_panel = JPanel()
                 obj.bac_panel.add(JLabel("BACCheckPanel failed to load."))
@@ -1621,7 +1752,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 url_params, url_payloads, body_params, body_payloads = self.extract_sidepanel_lists(req_bytes)
                 self.update_payload_panel(url_params, url_payloads, body_params, body_payloads)
             except Exception as e:
-                import traceback
+                # import traceback
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Error sending request:\n" + str(e) + "\n" + traceback.format_exc()))
         threading.Thread(target=worker).start()
 
@@ -1726,7 +1857,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 if self.save_tabs_state_callback:
                     self.save_tabs_state_callback()
             except Exception as e:
-                import traceback
+                # import traceback
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Attack Error:\n" + str(e) + "\n" + traceback.format_exc()))
         threading.Thread(target=worker).start()
 
@@ -1747,8 +1878,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 for line in header_lines:
                     base_headers.append(line)
                 history = []
-                # Loop through ALL open BAC roles (i.e., all open tabs)
-                for idx, role in enumerate(self.bac_panel.role_data):
+                # Only use roles that are currently in role_data, have a corresponding tab, and are enabled
+                for idx, role in enumerate(list(self.bac_panel.role_data)):
+                    if idx >= self.bac_panel.role_tabs.getTabCount() - 1:
+                        continue  # Skip if not a real role tab
+                    if not role.get("enabled", True):
+                        continue  # Skip if not enabled
                     modified_headers = []
                     used_headers = set()
                     # Build a header name -> value map for this role
@@ -1803,9 +1938,9 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 if self.save_tabs_state_callback:
                     self.save_tabs_state_callback()
             except Exception as e:
-                import traceback
+                # import traceback
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "BAC Check Error:\n" + str(e) + "\n" + traceback.format_exc()))
-        import threading
+        # import threading
         threading.Thread(target=worker).start()
 
 
@@ -2061,7 +2196,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
 # ---------- Tab Decorators ----------
 class ClosableTabComponent(JPanel):
-    def __init__(self, tabs, tab_panel, title, bac_parent=None):
+    def __init__(self, tabs, tab_panel, title, bac_parent=None, role_idx=None):
         JPanel.__init__(self)
         self.tabs = tabs
         self.tab_panel = tab_panel
@@ -2070,6 +2205,21 @@ class ClosableTabComponent(JPanel):
         self.setLayout(FlowLayout(FlowLayout.LEFT, 0, 0))
         self.label = JLabel(title)
         self.add(self.label)
+        # Add enable/disable checkbox for selective access check (only for BAC roles)
+        self.role_idx = role_idx
+        self.enable_checkbox = None
+        if self.bac_parent is not None and role_idx is not None:
+            self.enable_checkbox = JCheckBox()
+            # Default to enabled unless specified in role_data
+            enabled = True
+            try:
+                enabled = bool(self.bac_parent.role_data[role_idx].get("enabled", True))
+            except Exception:
+                pass
+            self.enable_checkbox.setSelected(enabled)
+            self.enable_checkbox.setToolTipText("Enable/disable this role for Access Check")
+            self.enable_checkbox.addActionListener(self.on_checkbox_toggle)
+            self.add(self.enable_checkbox)
         self.close_button = JButton("x")
         self.close_button.setPreferredSize(Dimension(16, 16))  # Good hitbox
         self.close_button.setFocusable(False)
@@ -2130,6 +2280,15 @@ class ClosableTabComponent(JPanel):
     class IgnoreTabSwitchListener(MouseAdapter):
         def mouseClicked(self, evt):
             evt.consume()
+
+    def on_checkbox_toggle(self, event):
+        # Update the enabled state in role_data
+        if self.bac_parent is not None and self.role_idx is not None:
+            try:
+                self.bac_parent.role_data[self.role_idx]["enabled"] = self.enable_checkbox.isSelected()
+                self.bac_parent.save_state()
+            except Exception:
+                pass
 
 class PlusTabComponent(JPanel):
     def __init__(self, tabs, extender):
@@ -2423,7 +2582,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                     json.dump(merged, f, indent=2)
                 JOptionPane.showMessageDialog(self.main_panel, "Merged %d tabs into:\n%s" % (len(export_list), out_path))
         except Exception as e:
-            import traceback
+            # import traceback
             JOptionPane.showMessageDialog(self.main_panel, "Error merging export tabs:\n" + str(e) + "\n" + traceback.format_exc())
 
 

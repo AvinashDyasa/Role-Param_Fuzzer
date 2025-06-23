@@ -2185,7 +2185,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         load_bac_configs(callbacks)
-        callbacks.setExtensionName("Param Fuzzer Tabs")
+        callbacks.setExtensionName("Role-Parameter_Fuzzer")
         # callbacks._parent_extender = self
 
         self.tabs = JTabbedPane()
@@ -2298,7 +2298,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.save_all_tabs_state()
 
     def getTabCaption(self):
-        return "Param Fuzzer"
+        return "Role-Param Fuzzer"
 
     def getUiComponent(self):
         return self.main_panel
@@ -2309,7 +2309,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         if messages and len(messages) == 1:
             def add_tab_action(event):
                 SwingUtilities.invokeLater(lambda: self.add_fuzzer_tab(messages[0]))
-            items.add(JMenuItem("Send to Param Fuzzer", actionPerformed=add_tab_action))
+            items.add(JMenuItem("Send to RP Fuzzer", actionPerformed=add_tab_action))
         return items
 
     def extensionUnloaded(self):

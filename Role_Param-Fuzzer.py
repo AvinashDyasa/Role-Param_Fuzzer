@@ -1005,7 +1005,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 else:
                     api_string = req_str.split('\r\n', 1)[0]
 
-                MAX_RESPONSE_LENGTH = 3000
+                MAX_RESPONSE_LENGTH = 10000
                 def safe_truncate(text, maxlen):
                     if text is None:
                         return ""
@@ -1084,7 +1084,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 else:
                     api_string = req_str.split('\r\n', 1)[0]
 
-                MAX_RESPONSE_LENGTH = 3000
+                MAX_RESPONSE_LENGTH = 10000
                 def safe_truncate(text, maxlen):
                     if text is None:
                         return ""
@@ -1173,7 +1173,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         if hasattr(panel, "history"):
                             all_tabs.append((tab_name, panel))
 
-                MAX_RESPONSE_LENGTH = 3000
+                MAX_RESPONSE_LENGTH = 10000
                 def safe_truncate(text, maxlen):
                     if text is None:
                         return ""
@@ -1253,7 +1253,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         if hasattr(panel, "history"):
                             all_tabs.append((tab_name, panel))
 
-                MAX_RESPONSE_LENGTH = 3000
+                MAX_RESPONSE_LENGTH = 10000
                 def safe_truncate(text, maxlen):
                     if text is None:
                         return ""

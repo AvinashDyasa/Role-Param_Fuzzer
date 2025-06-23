@@ -1558,8 +1558,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     # if it's not valid JSON, we'll just skip parsing
                     pass
         # Default payloads
-        url_payloads = ["1", "0", "NULL", "/", "*", "' OR '1'='1", "<script>alert(1)</script>"]
-        body_payloads = ["test", "admin", "' OR 1=1 --", "<img src=x onerror=alert(1)>"]
+        url_payloads = ["NULL", "*", "' OR 1=1 --", "<script>alert(1)</script>"]
+        body_payloads = ["NULL", "*", "' OR 1=1 --", "<img src=x onerror=alert(1)>"]
         return url_params, url_payloads, body_params, body_payloads
 
     # IMessageEditorController methods

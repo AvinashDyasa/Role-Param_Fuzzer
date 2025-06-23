@@ -757,8 +757,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.export_btn = JButton("Export Results", actionPerformed=self.exportResults)
         self.screenshot_btn = JButton("Take Screenshot", actionPerformed=self.takeScreenshot)
         self.export_tabs_btn = JButton("Export Tabs", actionPerformed=self.exportTabsForImport)
+        self.merge_export_tabs_btn = JButton("Merge Export", actionPerformed=(lambda e: self.parent_extender.mergeExportTabsForImport(e)))
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)
         btn_panel.add(self.export_tabs_btn)
+        btn_panel.add(self.merge_export_tabs_btn)
         btn_panel.add(self.import_tabs_btn)
         btn_panel.add(self.merge_btn)
         btn_panel.add(self.export_btn)
@@ -1413,6 +1415,18 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 "port": service.getPort(),
                 "protocol": service.getProtocol()
             }
+        # Save BAC tab data (roles)
+        bac_roles = []
+        if hasattr(self, "bac_panel") and hasattr(self.bac_panel, "role_data"):
+            for role in self.bac_panel.role_data:
+                # Deep copy to avoid mutation
+                bac_roles.append({
+                    "label": role.get("label", ""),
+                    "headers": list(role.get("headers", [])),
+                    "extra_enabled": role.get("extra_enabled", False),
+                    "extra_name": role.get("extra_name", ""),
+                    "extra_value": role.get("extra_value", "")
+                })
         # Save the tab name (if available)
         tab_name = None
         # (We'll set this when recreating the tab.)
@@ -1422,7 +1436,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             "url_payloads": url_payloads,
             "body_payloads": body_payloads,
             "service": service_data,
-            "tab_name": tab_name
+            "tab_name": tab_name,
+            "bac_roles": bac_roles
         }
 
     @staticmethod
@@ -1479,6 +1494,13 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         else:
             try:
                 obj.bac_panel = BACCheckPanel(host, headers)
+                # Restore BAC roles if present
+                if "bac_roles" in data and hasattr(obj.bac_panel, "role_data"):
+                    obj.bac_panel.role_data = []
+                    obj.bac_panel.role_tabs.removeAll()
+                    for role_cfg in data["bac_roles"]:
+                        obj.bac_panel._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
+                    obj.bac_panel.save_state()
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
                 import traceback
@@ -2333,11 +2355,76 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
             tab_data, self._helpers, self._callbacks, self.save_all_tabs_state, parent_extender=self
         )
         insert_at = self.tabs.getTabCount() - 1
-        tab_name = tab_data.get("tab_name", "Fuzz #%d" % (insert_at + 1))
+        tab_name = tab_data.get("tab_name", "Tab #%d" % (insert_at + 1))
         self.tabs.insertTab(tab_name, None, tab_panel, None, insert_at)
         self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, tab_panel, tab_name))
         self.tabs.setSelectedComponent(tab_panel)
         self.save_all_tabs_state()
+
+    def mergeExportTabsForImport(self, event):
+        try:
+            tabs = self.tabs
+            tab_titles = []
+            for i in range(tabs.getTabCount() - 1):  # Exclude '+'
+                tab_titles.append(tabs.getTitleAt(i))
+            if not tab_titles:
+                JOptionPane.showMessageDialog(self.main_panel, "No tabs to export.")
+                return
+
+            from javax.swing import JList
+            jlist = JList(tab_titles)
+            jlist.setSelectionInterval(0, 0)  # Pre-select first
+            jlist.setVisibleRowCount(min(8, len(tab_titles)))
+            res = JOptionPane.showConfirmDialog(self.main_panel, JScrollPane(jlist), "Select tabs to export", JOptionPane.OK_CANCEL_OPTION)
+            if res != JOptionPane.OK_OPTION:
+                return
+            selected_indices = jlist.getSelectedIndices()
+            if len(selected_indices) == 0:
+                JOptionPane.showMessageDialog(self.main_panel, "No tabs selected.")
+                return
+
+            export_list = []
+            for idx in selected_indices:
+                panel = tabs.getComponentAt(idx)
+                if hasattr(panel, "serialize"):
+                    tab_data = panel.serialize()
+                    tab_data["tab_name"] = tabs.getTitleAt(idx)
+                    export_list.append(tab_data)
+
+            last_dir = load_setting(self._callbacks, LAST_EXPORT_DIR_KEY)
+            if last_dir and os.path.isdir(last_dir):
+                chooser = JFileChooser(last_dir)
+            else:
+                chooser = JFileChooser()
+            chooser.setDialogTitle("Merge Export Tabs (to .json)")
+            chooser.setSelectedFile(File("paramfuzzer_tabs.json"))
+            if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
+                file = chooser.getSelectedFile()
+                out_path = file.getAbsolutePath()
+                if not out_path.endswith(".json"):
+                    out_path += ".json"
+                save_setting(self._callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
+
+                # Load existing file if present
+                merged = []
+                if os.path.exists(out_path):
+                    try:
+                        with codecs.open(out_path, "r", encoding="utf-8") as f:
+                            existing = json.load(f)
+                        if isinstance(existing, dict):
+                            existing = [existing]
+                        if isinstance(existing, list):
+                            merged.extend(existing)
+                    except Exception:
+                        pass
+                # Append new tabs
+                merged.extend(export_list)
+                with codecs.open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(merged, f, indent=2)
+                JOptionPane.showMessageDialog(self.main_panel, "Merged %d tabs into:\n%s" % (len(export_list), out_path))
+        except Exception as e:
+            import traceback
+            JOptionPane.showMessageDialog(self.main_panel, "Error merging export tabs:\n" + str(e) + "\n" + traceback.format_exc())
 
 
 

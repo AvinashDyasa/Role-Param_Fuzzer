@@ -370,15 +370,16 @@ class BACCheckPanel(JPanel):
         self.role_data = []
         self.role_tabs = JTabbedPane(JTabbedPane.TOP)
         self.role_tabs.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT)
-        self.add(self.role_tabs, BorderLayout.CENTER)
-
-        # --- Export/Import BAC Roles buttons ---
-        btn_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        # --- Top panel: Enable All + Export/Import ---
+        top_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        self.enable_all_checkbox = JCheckBox("Enable all", True, actionPerformed=self.toggle_all_roles)
+        top_panel.add(self.enable_all_checkbox)
         self.export_bac_btn = JButton("Export BAC Roles", actionPerformed=self.export_bac_roles)
         self.import_bac_btn = JButton("Import BAC Roles", actionPerformed=self.import_bac_roles)
-        btn_panel.add(self.export_bac_btn)
-        btn_panel.add(self.import_bac_btn)
-        self.add(btn_panel, BorderLayout.NORTH)
+        top_panel.add(self.export_bac_btn)
+        top_panel.add(self.import_bac_btn)
+        self.add(top_panel, BorderLayout.NORTH)
+        self.add(self.role_tabs, BorderLayout.CENTER)
 
         # 1. Load existing roles for this host from BAC_HOST_CONFIGS (if any)
         config = BAC_HOST_CONFIGS.get(self.host)
@@ -402,25 +403,34 @@ class BACCheckPanel(JPanel):
             if not self.role_data:
                 JOptionPane.showMessageDialog(self, "No BAC roles to export.")
                 return
-            # Show selection dialog
+            # --- Step 1: build a panel of checkboxes with Select All ---
+            panel = JPanel()
+            panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+            select_all = JCheckBox(" Select All", True)
+            panel.add(select_all)
+            checks = []
             role_names = [role.get("label", "Role #%d" % (i+1)) for i, role in enumerate(self.role_data)]
-            # from javax.swing import JList
-            jlist = JList(role_names)
-            jlist.setSelectionInterval(0, len(role_names)-1)  # Pre-select all
-            jlist.setVisibleRowCount(min(8, len(role_names)))
-            res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select BAC roles to export", JOptionPane.OK_CANCEL_OPTION)
+            for i, name in enumerate(role_names):
+                cb = JCheckBox(" " + name, True)
+                checks.append(cb)
+                panel.add(cb)
+            def toggle_all(evt=None):
+                state = select_all.isSelected()
+                for cb in checks:
+                    cb.setSelected(state)
+            select_all.addActionListener(toggle_all)
+            scroll = JScrollPane(panel)
+            scroll.setPreferredSize(Dimension(300, min((len(checks) + 1) * 30, 300)))
+            res = JOptionPane.showConfirmDialog(self, scroll, "Select BAC roles to export", JOptionPane.OK_CANCEL_OPTION)
             if res != JOptionPane.OK_OPTION:
                 return
-            selected_indices = jlist.getSelectedIndices()
-            if len(selected_indices) == 0:
+            selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
+            if not selected_indices:
                 JOptionPane.showMessageDialog(self, "No roles selected.")
                 return
             export_list = [self.role_data[idx] for idx in selected_indices]
             last_dir = load_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY) if self.callbacks else None
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
+            chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
             chooser.setDialogTitle("Export BAC Roles As")
             chooser.setSelectedFile(File("bac_roles_%s.json" % self.host.replace(':', '_')))
             if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
@@ -430,12 +440,10 @@ class BACCheckPanel(JPanel):
                     out_path += ".json"
                 if self.callbacks:
                     save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(out_path))
-                # import codecs, json
                 with codecs.open(out_path, "w", encoding="utf-8") as f:
                     json.dump(export_list, f, indent=2)
                 JOptionPane.showMessageDialog(self, "Exported %d BAC roles to:\n%s" % (len(export_list), out_path))
         except Exception as e:
-            # import traceback
             JOptionPane.showMessageDialog(self, "Error exporting BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
 
     def import_bac_roles(self, event):
@@ -764,6 +772,16 @@ class BACCheckPanel(JPanel):
         # If "+" tab clicked, add a new role
         if idx == self.role_tabs.getTabCount() - 1:
             pass
+
+    def toggle_all_roles(self, event):
+        checked = self.enable_all_checkbox.isSelected()
+        for idx, role in enumerate(self.role_data):
+            role["enabled"] = checked
+            # Update the checkbox in the tab component if present
+            tab_comp = self.role_tabs.getTabComponentAt(idx)
+            if hasattr(tab_comp, "set_checkbox_state"):
+                tab_comp.set_checkbox_state(checked)
+        self.save_state()
 
 
 ### ------------------- Fuzzer Tab Main ----------------------
@@ -1231,227 +1249,264 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
     def exportAllTabs(self, event):
         try:
-            # import os
-            # import codecs
+            # --- Step 1: build a list of candidate tabs ---
+            if not (hasattr(self, "parent_extender") and self.parent_extender):
+                JOptionPane.showMessageDialog(self, "No tabs to export.")
+                return
+            tabs = self.parent_extender.tabs
+            count = tabs.getTabCount() - 1  # exclude '+'
+            if count <= 0:
+                JOptionPane.showMessageDialog(self, "No tabs to export.")
+                return
 
-            # Try to get Burp project name
+            # --- Step 2: build a panel of checkboxes with a "Select All" ---
+            panel = JPanel()
+            panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+            select_all = JCheckBox(" Select All", True)
+            panel.add(select_all)
+            checks = []
+            for i in range(count):
+                title = tabs.getTitleAt(i)
+                cb = JCheckBox(" " + title, True)
+                checks.append(cb)
+                panel.add(cb)
+
+            def toggle_all(evt=None):
+                state = select_all.isSelected()
+                for cb in checks:
+                    cb.setSelected(state)
+            select_all.addActionListener(toggle_all)
+
+            scroll = JScrollPane(panel)
+            scroll.setPreferredSize(Dimension(300, min((count + 1) * 30, 300)))
+
+            res = JOptionPane.showConfirmDialog(self, scroll, "Select tabs to export", JOptionPane.OK_CANCEL_OPTION)
+            if res != JOptionPane.OK_OPTION:
+                return
+
+            selected = [i for i, cb in enumerate(checks) if cb.isSelected()]
+            if not selected:
+                JOptionPane.showMessageDialog(self, "No tabs selected.")
+                return
+
+            # --- Step 3: file chooser ---
             project_name = "all_fuzz_results"
             try:
-                project_path = self.callbacks.getProjectFile()
-                if project_path:
-                    project_name = os.path.splitext(os.path.basename(project_path))[0]
-            except Exception:
+                p = self.callbacks.getProjectFile()
+                if p:
+                    project_name = os.path.splitext(os.path.basename(p))[0]
+            except:
                 pass
-
-            # Use project name for filename, else fallback
             default_file = File(project_name + ".txt")
             LAST_EXPORT_DIR_KEY = "last-export-directory"
             last_dir = load_setting(self.callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
-            
-
+            chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
             chooser.setSelectedFile(default_file)
-            chooser.setDialogTitle("Export ALL Fuzz Results As")
-            if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
-                file = chooser.getSelectedFile()
-                out_path = file.getAbsolutePath()
-                if not out_path.endswith(".txt"):
-                    out_path += ".txt"
-                save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
+            chooser.setDialogTitle("Export Selected Fuzz Results As")
+            if chooser.showSaveDialog(None) != JFileChooser.APPROVE_OPTION:
+                return
 
-                # Ensure unique filename
-                def get_nonconflicting_filename(filepath):
-                    base, ext = os.path.splitext(filepath)
-                    counter = 1
-                    new_filepath = filepath
-                    while os.path.exists(new_filepath):
-                        new_filepath = "%s(%d)%s" % (base, counter, ext)
-                        counter += 1
-                    return new_filepath
-                out_path = get_nonconflicting_filename(out_path)
+            out_path = chooser.getSelectedFile().getAbsolutePath()
+            if not out_path.endswith(".txt"):
+                out_path += ".txt"
+            save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
 
-                # Get all tab results
-                all_tabs = []
-                if hasattr(self, "parent_extender") and self.parent_extender:
-                    tabs = self.parent_extender.tabs
-                    for i in range(tabs.getTabCount() - 1):  # Exclude '+'
-                        panel = tabs.getComponentAt(i)
-                        tab_name = tabs.getTitleAt(i)
-                        if hasattr(panel, "history"):
-                            all_tabs.append((tab_name, panel))
+            # ensure unique filename
+            def get_nonconflicting(fp):
+                base, ext = os.path.splitext(fp)
+                n = 1
+                new_fp = fp
+                while os.path.exists(new_fp):
+                    new_fp = "%s(%d)%s" % (base, n, ext)
+                    n += 1
+                return new_fp
+            out_path = get_nonconflicting(out_path)
 
-                MAX_RESPONSE_LENGTH = 10000
-                def safe_truncate(text, maxlen):
-                    if text is None:
-                        return ""
-                    if len(text) > maxlen:
-                        return text[:maxlen] + u"\n--------- Truncated ---------\n"
-                    return text
+            # --- Step 4: collect only the selected tabs ---
+            selected_tabs = []
+            for i in selected:
+                panel_i = tabs.getComponentAt(i)
+                name = tabs.getTitleAt(i)
+                if hasattr(panel_i, "history"):
+                    selected_tabs.append((name, panel_i))
 
-                with codecs.open(out_path, "w", encoding="utf-8") as f:
-                    for tab_idx, (tab_name, panel) in enumerate(all_tabs):
-                        req_bytes = panel.req_editor.getMessage()
-                        req_str = self.helpers.bytesToString(req_bytes)
-                        service = panel.getHttpService()
-                        api_string = ""
-                        if service:
-                            analyzed = self.helpers.analyzeRequest(service, req_bytes)
-                            method = analyzed.getMethod()
-                            url = analyzed.getUrl()
-                            full_url = "%s://%s%s" % (url.getProtocol(), url.getHost(), url.getFile())
-                            request_line = "%s %s" % (method, full_url)
-                            body_offset = analyzed.getBodyOffset()
-                            body = req_str[body_offset:]
-                            if body.strip():
-                                api_string = request_line + "\n\n" + body.strip()
-                            else:
-                                api_string = request_line
-                        else:
-                            api_string = req_str.split('\r\n', 1)[0]
+            # --- Step 5: write them out ---
+            MAX_RESPONSE_LENGTH = 10000
+            def safe_truncate(t, m):
+                if not t: return ""
+                return t if len(t) <= m else t[:m] + u"\n--------- Truncated ---------\n"
 
+            with codecs.open(out_path, "w", encoding="utf-8") as f:
+                for tab_name, panel_i in selected_tabs:
+                    req_bytes = panel_i.req_editor.getMessage()
+                    req_str = self.helpers.bytesToString(req_bytes)
+                    svc = panel_i.getHttpService()
+                    if svc:
+                        ana = self.helpers.analyzeRequest(svc, req_bytes)
+                        method = ana.getMethod()
+                        url = ana.getUrl()
+                        full = "%s://%s%s" % (url.getProtocol(), url.getHost(), url.getFile())
+                        api_line = method + " " + full
+                        body = req_str[ana.getBodyOffset():].strip()
                         f.write(u"\n====== %s ======\n" % tab_name)
-                        f.write(u"API: %s\n\n" % api_string)
-                        for idx, entry in enumerate(panel.history):
-                            req_text = self.get_bytes_as_text(entry.req_bytes)
-                            resp_text = self.get_bytes_as_text(entry.resp_bytes)
-                            resp_text = safe_truncate(resp_text, MAX_RESPONSE_LENGTH)
-                            param = getattr(entry, "param_name", "") or ""
-                            value = getattr(entry, "payload", "") or ""
+                        f.write(u"API: %s%s\n\n" % (api_line, ("\n\n" + body) if body else ""))
+                    else:
+                        f.write(u"\n====== %s ======\n" % tab_name)
+                        f.write(req_str.split('\r\n', 1)[0] + "\n\n")
 
-                            f.write(u"---- Attack #%d ----\n" % (idx + 1))
-                            f.write(u"Param/Role: %s\n" % param)
-                            f.write(u"Value: %s\n\n" % value)
-                            f.write(u"Request:\n%s\n\n" % req_text)
-                            f.write(u"Response:\n%s\n" % resp_text)
-                            f.write(u"-------------------\n\n")
-                JOptionPane.showMessageDialog(self, "Exported all fuzz results to:\n" + out_path)
+                    for idx, entry in enumerate(panel_i.history):
+                        r = self.get_bytes_as_text(entry.req_bytes)
+                        s = self.get_bytes_as_text(entry.resp_bytes)
+                        s = safe_truncate(s, MAX_RESPONSE_LENGTH)
+                        p_name = entry.param_name or ""
+                        p_val  = entry.payload    or ""
+
+                        f.write(u"---- Attack #%d ----\n" % (idx + 1))
+                        f.write(u"Param/Role: %s\n" % p_name)
+                        f.write(u"Value: %s\n\n"   % p_val)
+                        f.write(u"Request:\n%s\n\n"  % r)
+                        f.write(u"Response:\n%s\n"   % s)
+                        f.write(u"-------------------\n\n")
+
+            JOptionPane.showMessageDialog(self, "Exported %d tab(s) to:\n%s" % (len(selected_tabs), out_path))
         except Exception as e:
-            # import traceback
-            JOptionPane.showMessageDialog(self, "Error exporting all results:\n" + str(e) + "\n" + traceback.format_exc())
+            JOptionPane.showMessageDialog(self, "Error exporting results:\n%s\n%s" % (e, traceback.format_exc()))
 
     def mergeAllTabs(self, event):
         try:
-
-            # --- Remember last used export folder ---
+            if not (hasattr(self, "parent_extender") and self.parent_extender):
+                JOptionPane.showMessageDialog(self, "No tabs to merge.")
+                return
+            tabs = self.parent_extender.tabs
+            count = tabs.getTabCount() - 1  # exclude '+'
+            if count <= 0:
+                JOptionPane.showMessageDialog(self, "No tabs to merge.")
+                return
+            # --- Step 1: build a panel of checkboxes with Select All ---
+            panel = JPanel()
+            panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+            select_all = JCheckBox(" Select All", True)
+            panel.add(select_all)
+            checks = []
+            for i in range(count):
+                title = tabs.getTitleAt(i)
+                cb = JCheckBox(" " + title, True)
+                checks.append(cb)
+                panel.add(cb)
+            def toggle_all(evt=None):
+                state = select_all.isSelected()
+                for cb in checks:
+                    cb.setSelected(state)
+            select_all.addActionListener(toggle_all)
+            scroll = JScrollPane(panel)
+            scroll.setPreferredSize(Dimension(300, min((count + 1) * 30, 300)))
+            res = JOptionPane.showConfirmDialog(self, scroll, "Select tabs to merge", JOptionPane.OK_CANCEL_OPTION)
+            if res != JOptionPane.OK_OPTION:
+                return
+            selected = [i for i, cb in enumerate(checks) if cb.isSelected()]
+            if not selected:
+                JOptionPane.showMessageDialog(self, "No tabs selected.")
+                return
+            # --- Step 2: file chooser ---
             LAST_EXPORT_DIR_KEY = "last-export-directory"
             last_dir = load_setting(self.callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
-            chooser.setDialogTitle("Append ALL Fuzz Results To (Choose a .txt file)")
-
-            if chooser.showOpenDialog(None) == JFileChooser.APPROVE_OPTION:
-                file = chooser.getSelectedFile()
-                out_path = file.getAbsolutePath()
-                if not out_path.endswith(".txt"):
-                    out_path += ".txt"
-
-                # Save directory for next time
-                save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
-
-                # Get all tab results
-                all_tabs = []
-                if hasattr(self, "parent_extender") and self.parent_extender:
-                    tabs = self.parent_extender.tabs
-                    for i in range(tabs.getTabCount() - 1):  # Exclude '+'
-                        panel = tabs.getComponentAt(i)
-                        tab_name = tabs.getTitleAt(i)
-                        if hasattr(panel, "history"):
-                            all_tabs.append((tab_name, panel))
-
-                MAX_RESPONSE_LENGTH = 10000
-                def safe_truncate(text, maxlen):
-                    if text is None:
-                        return ""
-                    if len(text) > maxlen:
-                        return text[:maxlen] + u"\n--------- Truncated ---------\n"
-                    return text
-
-                with codecs.open(out_path, "a", encoding="utf-8") as f:
-                    for tab_name, panel in all_tabs:
-                        req_bytes = panel.req_editor.getMessage()
-                        req_str = self.helpers.bytesToString(req_bytes)
-                        service = panel.getHttpService()
-                        api_string = ""
-                        if service:
-                            analyzed = self.helpers.analyzeRequest(service, req_bytes)
-                            method = analyzed.getMethod()
-                            url = analyzed.getUrl()
-                            full_url = "%s://%s%s" % (url.getProtocol(), url.getHost(), url.getFile())
-                            request_line = "%s %s" % (method, full_url)
-                            body_offset = analyzed.getBodyOffset()
-                            body = req_str[body_offset:]
-                            if body.strip():
-                                api_string = request_line + "\n\n" + body.strip()
-                            else:
-                                api_string = request_line
-                        else:
-                            api_string = req_str.split('\r\n', 1)[0]
-
+            chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
+            chooser.setDialogTitle("Append Selected Fuzz Results To (Choose a .txt file)")
+            if chooser.showOpenDialog(None) != JFileChooser.APPROVE_OPTION:
+                return
+            out_path = chooser.getSelectedFile().getAbsolutePath()
+            if not out_path.endswith(".txt"):
+                out_path += ".txt"
+            save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
+            # --- Step 3: collect only the selected tabs ---
+            selected_tabs = []
+            for i in selected:
+                panel_i = tabs.getComponentAt(i)
+                name = tabs.getTitleAt(i)
+                if hasattr(panel_i, "history"):
+                    selected_tabs.append((name, panel_i))
+            # --- Step 4: append them ---
+            MAX_RESPONSE_LENGTH = 10000
+            def safe_truncate(t, m):
+                if not t: return ""
+                return t if len(t) <= m else t[:m] + u"\n--------- Truncated ---------\n"
+            with codecs.open(out_path, "a", encoding="utf-8") as f:
+                for tab_name, panel_i in selected_tabs:
+                    req_bytes = panel_i.req_editor.getMessage()
+                    req_str = self.helpers.bytesToString(req_bytes)
+                    svc = panel_i.getHttpService()
+                    if svc:
+                        ana = self.helpers.analyzeRequest(svc, req_bytes)
+                        method = ana.getMethod()
+                        url = ana.getUrl()
+                        full = "%s://%s%s" % (url.getProtocol(), url.getHost(), url.getFile())
+                        api_line = method + " " + full
+                        body = req_str[ana.getBodyOffset():].strip()
                         f.write(u"\n====== %s ======\n" % tab_name)
-                        f.write(u"API: %s\n\n" % api_string)
-                        for idx, entry in enumerate(panel.history):
-                            req_text = self.get_bytes_as_text(entry.req_bytes)
-                            resp_text = self.get_bytes_as_text(entry.resp_bytes)
-                            resp_text = safe_truncate(resp_text, MAX_RESPONSE_LENGTH)
-                            param = getattr(entry, "param_name", "") or ""
-                            value = getattr(entry, "payload", "") or ""
-
-                            f.write(u"---- Attack #%d ----\n" % (idx + 1))
-                            f.write(u"Param/Role: %s\n" % param)
-                            f.write(u"Value: %s\n\n" % value)
-                            f.write(u"Request:\n%s\n\n" % req_text)
-                            f.write(u"Response:\n%s\n" % resp_text)
-                            f.write(u"-------------------\n\n")
-                JOptionPane.showMessageDialog(self, "Merged all fuzz results into:\n" + out_path)
+                        f.write(u"API: %s%s\n\n" % (api_line, ("\n\n" + body) if body else ""))
+                    else:
+                        f.write(u"\n====== %s ======\n" % tab_name)
+                        f.write(req_str.split('\r\n', 1)[0] + "\n\n")
+                    for idx, entry in enumerate(panel_i.history):
+                        r = self.get_bytes_as_text(entry.req_bytes)
+                        s = self.get_bytes_as_text(entry.resp_bytes)
+                        s = safe_truncate(s, MAX_RESPONSE_LENGTH)
+                        p_name = entry.param_name or ""
+                        p_val  = entry.payload    or ""
+                        f.write(u"---- Attack #%d ----\n" % (idx + 1))
+                        f.write(u"Param/Role: %s\n" % p_name)
+                        f.write(u"Value: %s\n\n"   % p_val)
+                        f.write(u"Request:\n%s\n\n"  % r)
+                        f.write(u"Response:\n%s\n"   % s)
+                        f.write(u"-------------------\n\n")
+            JOptionPane.showMessageDialog(self, "Merged %d tab(s) into:\n%s" % (len(selected_tabs), out_path))
         except Exception as e:
-            # import traceback
-            JOptionPane.showMessageDialog(self, "Error merging all results:\n" + str(e) + "\n" + traceback.format_exc())
+            JOptionPane.showMessageDialog(self, "Error merging results:\n%s\n%s" % (e, traceback.format_exc()))
 
     def exportTabsForImport(self, event):
         try:
             if not (hasattr(self, "parent_extender") and self.parent_extender):
                 JOptionPane.showMessageDialog(self, "Cannot export: parent component not found.")
                 return
-            # Get tab titles for selection
             tabs = self.parent_extender.tabs
-            tab_titles = []
-            for i in range(tabs.getTabCount() - 1):  # Exclude '+'
-                tab_titles.append(tabs.getTitleAt(i))
-            if not tab_titles:
+            count = tabs.getTabCount() - 1  # Exclude '+'
+            if count <= 0:
                 JOptionPane.showMessageDialog(self, "No tabs to export.")
                 return
-
-            # from javax.swing import JList
-            jlist = JList(tab_titles)
-            jlist.setSelectionInterval(0, 0)  # Pre-select first
-            jlist.setVisibleRowCount(min(8, len(tab_titles)))
-            res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select tabs to export", JOptionPane.OK_CANCEL_OPTION)
+            # --- Step 1: build a panel of checkboxes with Select All ---
+            panel = JPanel()
+            panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+            select_all = JCheckBox(" Select All", True)
+            panel.add(select_all)
+            checks = []
+            tab_titles = [tabs.getTitleAt(i) for i in range(count)]
+            for i, title in enumerate(tab_titles):
+                cb = JCheckBox(" " + title, True)
+                checks.append(cb)
+                panel.add(cb)
+            def toggle_all(evt=None):
+                state = select_all.isSelected()
+                for cb in checks:
+                    cb.setSelected(state)
+            select_all.addActionListener(toggle_all)
+            scroll = JScrollPane(panel)
+            scroll.setPreferredSize(Dimension(300, min((count + 1) * 30, 300)))
+            res = JOptionPane.showConfirmDialog(self, scroll, "Select tabs to export", JOptionPane.OK_CANCEL_OPTION)
             if res != JOptionPane.OK_OPTION:
                 return
-            selected_indices = jlist.getSelectedIndices()
-            if len(selected_indices) == 0:
+            selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
+            if not selected_indices:
                 JOptionPane.showMessageDialog(self, "No tabs selected.")
                 return
-
             export_list = []
             for idx in selected_indices:
-                panel = tabs.getComponentAt(idx)
-                if hasattr(panel, "serialize"):
-                    tab_data = panel.serialize()
+                panel_i = tabs.getComponentAt(idx)
+                if hasattr(panel_i, "serialize"):
+                    tab_data = panel_i.serialize()
                     tab_data["tab_name"] = tabs.getTitleAt(idx)
                     export_list.append(tab_data)
-
-            # Use last export dir if available
             last_dir = load_setting(self.callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
+            chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
             chooser.setDialogTitle("Export Tabs (for Import)")
             chooser.setSelectedFile(File("paramfuzzer_tabs.json"))
             if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
@@ -1459,13 +1514,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 out_path = file.getAbsolutePath()
                 if not out_path.endswith(".json"):
                     out_path += ".json"
-                # Save directory for next time
                 save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
                 with codecs.open(out_path, "w", encoding="utf-8") as f:
                     json.dump(export_list, f, indent=2)
                 JOptionPane.showMessageDialog(self, "Exported %d tabs for import:\n%s" % (len(export_list), out_path))
         except Exception as e:
-            # import traceback
             JOptionPane.showMessageDialog(self, "Error exporting tabs:\n" + str(e) + "\n" + traceback.format_exc())
 
     def importTabsFromFile(self, event):
@@ -1726,14 +1779,27 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
     def send_request(self, event):
         def worker():
             try:
+                # grab whatever the user has in the editor
                 req_bytes = self.req_editor.getMessage()
+
                 if self.base_message is not None:
                     service = self.base_message.getHttpService()
                 else:
                     service = self.guess_service_from_request(req_bytes)
                     if not service:
-                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
+                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self,
+                            "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
                         return
+                # ─── NEW: rebuild the request so Content-Length is correct ───
+                analyzed = self.helpers.analyzeRequest(service, req_bytes)
+                headers = list(analyzed.getHeaders())
+                body_offset = analyzed.getBodyOffset()
+                body = req_bytes[body_offset:]
+                headers = [h for h in headers if not h.lower().startswith("content-length")]
+                headers.append("Content-Length: %d" % len(body))
+                req_bytes = self.helpers.buildHttpMessage(headers, body)
+
+                # now send
                 resp = self.callbacks.makeHttpRequest(service, req_bytes)
                 resp_bytes = resp.getResponse()
                 entry = MessageHistoryEntry(req_bytes, resp_bytes)
@@ -1768,6 +1834,22 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     if not service:
                         SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
                         return
+                # ─── NEW: rebuild the request so Content-Length is correct ───
+                analyzed = self.helpers.analyzeRequest(service, req_bytes)
+                headers = list(analyzed.getHeaders())
+                body_offset = analyzed.getBodyOffset()
+                body = req_bytes[body_offset:]
+                headers = [h for h in headers if not h.lower().startswith("content-length")]
+                headers.append("Content-Length: %d" % len(body))
+                req_bytes = self.helpers.buildHttpMessage(headers, body)
+                req_str = self.helpers.bytesToString(req_bytes)
+                if self.base_message is not None:
+                    service = self.base_message.getHttpService()
+                else:
+                    service = self.guess_service_from_request(req_bytes)
+                    if not service:
+                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
+                        return
                 analyzed = self.helpers.analyzeRequest(service, req_bytes)
                 params = analyzed.getParameters()
                 # --- Use params and payloads from side panel
@@ -1794,6 +1876,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 mod_req_bytes = self.helpers.removeParameter(mod_req_bytes, p)
                         new_param = self.helpers.buildParameter(pname, payload, 0)
                         mod_req_bytes = self.helpers.addParameter(mod_req_bytes, new_param)
+                        # Rebuild Content-Length
+                        analyzed_mod = self.helpers.analyzeRequest(service, mod_req_bytes)
+                        headers_mod = list(analyzed_mod.getHeaders())
+                        body_offset_mod = analyzed_mod.getBodyOffset()
+                        body_mod = mod_req_bytes[body_offset_mod:]
+                        headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
+                        headers_mod.append("Content-Length: %d" % len(body_mod))
+                        mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod)
                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
                         mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
                         entry = MessageHistoryEntry(mod_req_bytes, resp.getResponse(), param_name=pname, payload=payload)
@@ -1813,6 +1903,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                     found = True
                             new_param = self.helpers.buildParameter(pname, payload, 1)
                             mod_req_bytes = self.helpers.addParameter(mod_req_bytes, new_param)
+                            # Rebuild Content-Length
+                            analyzed_mod = self.helpers.analyzeRequest(service, mod_req_bytes)
+                            headers_mod = list(analyzed_mod.getHeaders())
+                            body_offset_mod = analyzed_mod.getBodyOffset()
+                            body_mod = mod_req_bytes[body_offset_mod:]
+                            headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
+                            headers_mod.append("Content-Length: %d" % len(body_mod))
+                            mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod)
                             if found or mod_req_bytes != req_bytes:
                                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
                                 mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
@@ -1833,6 +1931,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                         body_mod = json.dumps(jbody_mod)
                                         req_mod = headers + "\r\n\r\n" + body_mod
                                         mod_req_bytes = self.helpers.stringToBytes(req_mod)
+                                        # Rebuild Content-Length
+                                        analyzed_mod = self.helpers.analyzeRequest(service, mod_req_bytes)
+                                        headers_mod = list(analyzed_mod.getHeaders())
+                                        body_offset_mod = analyzed_mod.getBodyOffset()
+                                        body_mod_bytes = mod_req_bytes[body_offset_mod:]
+                                        headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
+                                        headers_mod.append("Content-Length: %d" % len(body_mod_bytes))
+                                        mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod_bytes)
                                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
                                         entry = MessageHistoryEntry(mod_req_bytes, resp.getResponse(), param_name=key_path, payload=payload)
                                         history.append(entry)
@@ -1867,7 +1973,15 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 req_bytes = self.req_editor.getMessage()
                 req_str = self.helpers.bytesToString(req_bytes)
                 service = self.base_message.getHttpService() if self.base_message else self.guess_service_from_request(req_bytes)
+                # ─── NEW: rebuild the request so Content-Length is correct ───
                 analyzed = self.helpers.analyzeRequest(service, req_bytes)
+                headers = list(analyzed.getHeaders())
+                body_offset = analyzed.getBodyOffset()
+                body = req_bytes[body_offset:]
+                headers = [h for h in headers if not h.lower().startswith("content-length")]
+                headers.append("Content-Length: %d" % len(body))
+                req_bytes = self.helpers.buildHttpMessage(headers, body)
+                req_str = self.helpers.bytesToString(req_bytes)
                 body = ""
                 if "\r\n\r\n" in req_str:
                     headers_part, body = req_str.split('\r\n\r\n', 1)
@@ -2203,14 +2317,11 @@ class ClosableTabComponent(JPanel):
         self.bac_parent = bac_parent   # Use this instead of .parent!
         self.setOpaque(False)
         self.setLayout(FlowLayout(FlowLayout.LEFT, 0, 0))
-        self.label = JLabel(title)
-        self.add(self.label)
-        # Add enable/disable checkbox for selective access check (only for BAC roles)
         self.role_idx = role_idx
         self.enable_checkbox = None
+        # --- Enable/disable checkbox for BAC roles, now on the left ---
         if self.bac_parent is not None and role_idx is not None:
             self.enable_checkbox = JCheckBox()
-            # Default to enabled unless specified in role_data
             enabled = True
             try:
                 enabled = bool(self.bac_parent.role_data[role_idx].get("enabled", True))
@@ -2220,6 +2331,8 @@ class ClosableTabComponent(JPanel):
             self.enable_checkbox.setToolTipText("Enable/disable this role for Access Check")
             self.enable_checkbox.addActionListener(self.on_checkbox_toggle)
             self.add(self.enable_checkbox)
+        self.label = JLabel(title)
+        self.add(self.label)
         self.close_button = JButton("x")
         self.close_button.setPreferredSize(Dimension(16, 16))  # Good hitbox
         self.close_button.setFocusable(False)
@@ -2229,7 +2342,6 @@ class ClosableTabComponent(JPanel):
         self.close_button.setOpaque(True)
         self.close_button.setBackground(Color(240,240,240))  # or a color matching your theme
         self.close_button.setBorder(BorderFactory.createLineBorder(Color(200,200,200)))  # Draw visible box
-
         class CloseListener(ActionListener):
             def actionPerformed(listener_self, e):
                 idx = self.tabs.indexOfComponent(self.tab_panel)
@@ -2251,7 +2363,9 @@ class ClosableTabComponent(JPanel):
         # Mouse listener for switching/renaming
         self.addMouseListener(self.TabMouseListener(self))
         self.close_button.addMouseListener(self.IgnoreTabSwitchListener())
-
+    def set_checkbox_state(self, checked):
+        if self.enable_checkbox is not None:
+            self.enable_checkbox.setSelected(checked)
     def setTitle(self, title):
         self.label.setText(title)
 

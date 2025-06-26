@@ -459,7 +459,6 @@ class BACCheckPanel(JPanel):
                 in_path = file.getAbsolutePath()
                 if self.callbacks:
                     save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(in_path))
-                # import codecs, json
                 with codecs.open(in_path, "r", encoding="utf-8") as f:
                     imported = json.load(f)
                 if isinstance(imported, dict):
@@ -467,32 +466,48 @@ class BACCheckPanel(JPanel):
                 if not imported:
                     JOptionPane.showMessageDialog(self, "No BAC roles found in file.")
                     return
-                # Show selection dialog
+                
+                # --- Build a panel of checkboxes with Select All ---
+                panel = JPanel()
+                panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+                select_all = JCheckBox(" Select All", True)
+                panel.add(select_all)
+                checks = []
                 role_names = [role.get("label", "Role #%d" % (i+1)) for i, role in enumerate(imported)]
-                # from javax.swing import JList
-                jlist = JList(role_names)
-                jlist.setSelectionInterval(0, len(role_names)-1)  # Pre-select all
-                jlist.setVisibleRowCount(min(8, len(role_names)))
-                res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select BAC roles to import", JOptionPane.OK_CANCEL_OPTION)
+                for i, name in enumerate(role_names):
+                    cb = JCheckBox(" " + name, True)
+                    checks.append(cb)
+                    panel.add(cb)
+
+                def toggle_all(evt=None):
+                    state = select_all.isSelected()
+                    for cb in checks:
+                        cb.setSelected(state)
+
+                select_all.addActionListener(toggle_all)
+
+                scroll = JScrollPane(panel)
+                scroll.setPreferredSize(Dimension(300, min((len(checks) + 1) * 30, 300)))
+                res = JOptionPane.showConfirmDialog(self, scroll, "Select BAC roles to import", JOptionPane.OK_CANCEL_OPTION)
                 if res != JOptionPane.OK_OPTION:
                     return
-                selected_indices = jlist.getSelectedIndices()
-                if len(selected_indices) == 0:
+
+                selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
+                if not selected_indices:
                     JOptionPane.showMessageDialog(self, "No roles selected.")
                     return
-                count = 0
+
                 # Insert imported roles before the plus tab
                 plus_idx = self.role_tabs.getTabCount() - 1
                 for offset, idx in enumerate(selected_indices):
                     role_cfg = imported[idx]
-                    # Insert at plus_idx + offset (so they appear before the plus tab)
                     self._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
                 self.save_state()
-                self.ensure_single_plus_tab()  # Ensure plus tab is always present and unique
+                self.ensure_single_plus_tab()
                 JOptionPane.showMessageDialog(self, "Imported %d BAC roles." % len(selected_indices))
         except Exception as e:
-            # import traceback
             JOptionPane.showMessageDialog(self, "Error importing BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
+
 
     def _add_role_tab_internal(self, label=None, config=None):
         # Used for initial load - appends at end before "+" tab
@@ -1524,47 +1539,66 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
     def importTabsFromFile(self, event):
         try:
             last_dir = load_setting(self.callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
+            chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
             chooser.setDialogTitle("Import Tabs (.json)")
+
             if chooser.showOpenDialog(None) == JFileChooser.APPROVE_OPTION:
                 file = chooser.getSelectedFile()
                 in_path = file.getAbsolutePath()
-                # Save directory for next time
                 save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(in_path))
+
                 with codecs.open(in_path, "r", encoding="utf-8") as f:
                     imported = json.load(f)
-                # Support both single tab and list of tabs
+
                 if isinstance(imported, dict):
                     imported = [imported]
                 if not imported:
                     JOptionPane.showMessageDialog(self, "No tabs found in file.")
                     return
-                # Show selection dialog
+
                 tab_names = [tab.get("tab_name", "Tab #%d" % (i+1)) for i, tab in enumerate(imported)]
-                # from javax.swing import JList
-                jlist = JList(tab_names)
-                jlist.setSelectionInterval(0, len(tab_names)-1)  # Pre-select all
-                jlist.setVisibleRowCount(min(8, len(tab_names)))
-                res = JOptionPane.showConfirmDialog(self, JScrollPane(jlist), "Select tabs to import", JOptionPane.OK_CANCEL_OPTION)
+
+                # --- Build checkbox panel with Select All ---
+                panel = JPanel()
+                panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+                select_all = JCheckBox(" Select All", True)
+                panel.add(select_all)
+                checks = []
+
+                for name in tab_names:
+                    cb = JCheckBox(" " + name, True)
+                    checks.append(cb)
+                    panel.add(cb)
+
+                def toggle_all(evt=None):
+                    state = select_all.isSelected()
+                    for cb in checks:
+                        cb.setSelected(state)
+
+                select_all.addActionListener(toggle_all)
+
+                scroll = JScrollPane(panel)
+                scroll.setPreferredSize(Dimension(300, min((len(checks) + 1) * 30, 300)))
+                res = JOptionPane.showConfirmDialog(self, scroll, "Select tabs to import", JOptionPane.OK_CANCEL_OPTION)
                 if res != JOptionPane.OK_OPTION:
                     return
-                selected_indices = jlist.getSelectedIndices()
-                if len(selected_indices) == 0:
+
+                selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
+                if not selected_indices:
                     JOptionPane.showMessageDialog(self, "No tabs selected.")
                     return
+
                 count = 0
                 for idx in selected_indices:
                     tab_data = imported[idx]
                     if hasattr(self, "parent_extender") and self.parent_extender and hasattr(self.parent_extender, "add_fuzzer_tab_with_state"):
                         self.parent_extender.add_fuzzer_tab_with_state(tab_data)
                         count += 1
+
                 JOptionPane.showMessageDialog(self, "Imported %d tabs." % count)
         except Exception as e:
-            # import traceback
             JOptionPane.showMessageDialog(self, "Error importing tabs:\n" + str(e) + "\n" + traceback.format_exc())
+
 
     def serialize(self):
         # Save base request
@@ -2638,21 +2672,38 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         try:
             tabs = self.tabs
             tab_titles = []
-            for i in range(tabs.getTabCount() - 1):  # Exclude '+'
+            for i in range(tabs.getTabCount() - 1):  # Exclude '+' tab
                 tab_titles.append(tabs.getTitleAt(i))
             if not tab_titles:
                 JOptionPane.showMessageDialog(self.main_panel, "No tabs to export.")
                 return
 
-            from javax.swing import JList
-            jlist = JList(tab_titles)
-            jlist.setSelectionInterval(0, 0)  # Pre-select first
-            jlist.setVisibleRowCount(min(8, len(tab_titles)))
-            res = JOptionPane.showConfirmDialog(self.main_panel, JScrollPane(jlist), "Select tabs to export", JOptionPane.OK_CANCEL_OPTION)
+            # --- Build checkbox panel with Select All ---
+            panel = JPanel()
+            panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+            select_all = JCheckBox(" Select All", True)
+            panel.add(select_all)
+            checks = []
+            for title in tab_titles:
+                cb = JCheckBox(" " + title, True)
+                checks.append(cb)
+                panel.add(cb)
+
+            def toggle_all(evt=None):
+                state = select_all.isSelected()
+                for cb in checks:
+                    cb.setSelected(state)
+
+            select_all.addActionListener(toggle_all)
+
+            scroll = JScrollPane(panel)
+            scroll.setPreferredSize(Dimension(300, min((len(checks) + 1) * 30, 300)))
+            res = JOptionPane.showConfirmDialog(self.main_panel, scroll, "Select tabs to export", JOptionPane.OK_CANCEL_OPTION)
             if res != JOptionPane.OK_OPTION:
                 return
-            selected_indices = jlist.getSelectedIndices()
-            if len(selected_indices) == 0:
+
+            selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
+            if not selected_indices:
                 JOptionPane.showMessageDialog(self.main_panel, "No tabs selected.")
                 return
 
@@ -2665,12 +2716,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                     export_list.append(tab_data)
 
             last_dir = load_setting(self._callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
+            chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
             chooser.setDialogTitle("Merge Export Tabs (to .json)")
             chooser.setSelectedFile(File("paramfuzzer_tabs.json"))
+
             if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
                 file = chooser.getSelectedFile()
                 out_path = file.getAbsolutePath()
@@ -2678,7 +2727,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                     out_path += ".json"
                 save_setting(self._callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
 
-                # Load existing file if present
+                # Load existing content if any
                 merged = []
                 if os.path.exists(out_path):
                     try:
@@ -2689,15 +2738,18 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                         if isinstance(existing, list):
                             merged.extend(existing)
                     except Exception:
-                        pass
-                # Append new tabs
+                        pass  # Ignore errors in reading existing file
+
+                # Append selected tabs
                 merged.extend(export_list)
+
                 with codecs.open(out_path, "w", encoding="utf-8") as f:
                     json.dump(merged, f, indent=2)
+
                 JOptionPane.showMessageDialog(self.main_panel, "Merged %d tabs into:\n%s" % (len(export_list), out_path))
         except Exception as e:
-            # import traceback
             JOptionPane.showMessageDialog(self.main_panel, "Error merging export tabs:\n" + str(e) + "\n" + traceback.format_exc())
+
 
 
 

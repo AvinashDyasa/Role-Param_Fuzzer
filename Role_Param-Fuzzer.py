@@ -370,8 +370,21 @@ class BACCheckPanel(JPanel):
         self.role_data = []
         self.role_tabs = JTabbedPane(JTabbedPane.TOP)
         self.role_tabs.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT)
-        # --- Top panel: Enable All + Export/Import ---
+        # --- Top panel: Move Left/Right + Enable All + Export/Import ---
         top_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        # Add move left/right buttons
+        self.move_left_btn = JButton("<")
+        self.move_right_btn = JButton(">")
+        self.move_left_btn.setPreferredSize(Dimension(24, 24))
+        self.move_right_btn.setPreferredSize(Dimension(24, 24))
+        self.move_left_btn.setFocusable(False)
+        self.move_right_btn.setFocusable(False)
+        self.move_left_btn.setToolTipText("Move selected role left")
+        self.move_right_btn.setToolTipText("Move selected role right")
+        self.move_left_btn.addActionListener(self.move_selected_left)
+        self.move_right_btn.addActionListener(self.move_selected_right)
+        top_panel.add(self.move_left_btn)
+        top_panel.add(self.move_right_btn)
         self.enable_all_checkbox = JCheckBox("Enable all", True, actionPerformed=self.toggle_all_roles)
         top_panel.add(self.enable_all_checkbox)
         self.export_bac_btn = JButton("Export BAC Roles", actionPerformed=self.export_bac_roles)
@@ -390,6 +403,63 @@ class BACCheckPanel(JPanel):
         # Always add plus tab last
         self.ensure_single_plus_tab()
         self.role_tabs.addChangeListener(self.on_tab_change)
+        self.update_move_buttons_state()
+
+    def update_move_buttons_state(self):
+        idx = self.role_tabs.getSelectedIndex()
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        self.move_left_btn.setEnabled(idx > 0 and idx < count)
+        self.move_right_btn.setEnabled(idx >= 0 and idx < count - 1)
+
+    def on_tab_change(self, event):
+        idx = self.role_tabs.getSelectedIndex()
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        self.update_move_buttons_state()
+        # If "+" tab clicked, add a new role
+        if idx == self.role_tabs.getTabCount() - 1:
+            pass
+
+    def move_selected_left(self, event):
+        idx = self.role_tabs.getSelectedIndex()
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        if idx > 0 and idx < count:
+            self.move_role_tab(idx, idx - 1)
+            self.role_tabs.setSelectedIndex(idx - 1)
+            self.update_move_buttons_state()
+
+    def move_selected_right(self, event):
+        idx = self.role_tabs.getSelectedIndex()
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        if idx >= 0 and idx < count - 1:
+            self.move_role_tab(idx, idx + 1)
+            self.role_tabs.setSelectedIndex(idx + 1)
+            self.update_move_buttons_state()
+
+    def move_role_tab(self, from_idx, to_idx):
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        if from_idx == to_idx or from_idx < 0 or to_idx < 0 or from_idx >= count or to_idx >= count:
+            return
+        # Swap role_data
+        self.role_data[from_idx], self.role_data[to_idx] = self.role_data[to_idx], self.role_data[from_idx]
+        self.save_state()
+        self.rebuild_role_tabs_from_data()
+
+    def rebuild_role_tabs_from_data(self):
+        # Remove all real tabs (except plus tab)
+        plus_idx = self.role_tabs.getTabCount() - 1
+        # Remove from last real tab to first
+        for i in range(plus_idx - 1, -1, -1):
+            self.role_tabs.remove(i)
+        # Re-add all tabs from role_data
+        for idx, role_cfg in enumerate(self.role_data):
+            role_label = role_cfg.get("label", "Role %d" % (idx + 1))
+            panel = self.make_role_panel(role_cfg, idx)
+            self.role_tabs.insertTab(role_label, None, panel, None, idx)
+            self.role_tabs.setTabComponentAt(idx, ClosableTabComponent(self.role_tabs, panel, role_label, self, role_idx=idx))
+        # Ensure plus tab is last
+        self.ensure_single_plus_tab()
+        self.role_tabs.setSelectedIndex(0 if self.role_data else self.role_tabs.getTabCount() - 1)
+        self.update_move_buttons_state()
 
     def ensure_single_plus_tab(self):
         # Remove any existing plus tab
@@ -782,12 +852,6 @@ class BACCheckPanel(JPanel):
         self.role_tabs.addTab("", plus_panel)
         self.role_tabs.setTabComponentAt(idx, btn)
 
-    def on_tab_change(self, event):
-        idx = self.role_tabs.getSelectedIndex()
-        # If "+" tab clicked, add a new role
-        if idx == self.role_tabs.getTabCount() - 1:
-            pass
-
     def toggle_all_roles(self, event):
         checked = self.enable_all_checkbox.isSelected()
         for idx, role in enumerate(self.role_data):
@@ -797,6 +861,31 @@ class BACCheckPanel(JPanel):
             if hasattr(tab_comp, "set_checkbox_state"):
                 tab_comp.set_checkbox_state(checked)
         self.save_state()
+
+    def move_selected_left(self, event):
+        idx = self.role_tabs.getSelectedIndex()
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        if idx > 0 and idx < count:
+            self.move_role_tab(idx, idx - 1)
+            self.role_tabs.setSelectedIndex(idx - 1)
+            self.update_move_buttons_state()
+
+    def move_selected_right(self, event):
+        idx = self.role_tabs.getSelectedIndex()
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        if idx >= 0 and idx < count - 1:
+            self.move_role_tab(idx, idx + 1)
+            self.role_tabs.setSelectedIndex(idx + 1)
+            self.update_move_buttons_state()
+
+    def move_role_tab(self, from_idx, to_idx):
+        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
+        if from_idx == to_idx or from_idx < 0 or to_idx < 0 or from_idx >= count or to_idx >= count:
+            return
+        # Swap role_data
+        self.role_data[from_idx], self.role_data[to_idx] = self.role_data[to_idx], self.role_data[from_idx]
+        self.save_state()
+        self.rebuild_role_tabs_from_data()
 
 
 ### ------------------- Fuzzer Tab Main ----------------------
@@ -844,9 +933,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         self.status_lbl = JLabel(" 0/0 ")
         self.status_lbl.setHorizontalAlignment(JLabel.CENTER)
-        self.status_lbl.setPreferredSize(Dimension(40, 24))
-        self.status_lbl.setMaximumSize(Dimension(40, 24))
-        self.status_lbl.setMinimumSize(Dimension(40, 24))
+        # Increased width to fit larger numbers, e.g., 100/100
+        self.status_lbl.setPreferredSize(Dimension(60, 24))
+        self.status_lbl.setMaximumSize(Dimension(60, 24))
+        self.status_lbl.setMinimumSize(Dimension(60, 24))
 
         self.next_btn = JButton(">")
         self.next_btn.setPreferredSize(nav_button_size)
@@ -955,7 +1045,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.bac_panel.add(JLabel("NO HEADERS FOUND. Load or send a real request."))
         else:
             try:
-                self.bac_panel = BACCheckPanel(host, headers)
+                self.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(self.callbacks), callbacks=self.callbacks)
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
                 # import traceback
@@ -1705,7 +1795,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             obj.bac_panel.add(JLabel("NO HEADERS FOUND. Load or send a real request."))
         else:
             try:
-                obj.bac_panel = BACCheckPanel(host, headers, callbacks=callbacks)
+                obj.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(callbacks), callbacks=callbacks)
                 # Restore BAC roles if present
                 if "bac_roles" in data and hasattr(obj.bac_panel, "role_data"):
                     obj.bac_panel.role_data = []
@@ -1798,8 +1888,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     # if it's not valid JSON, we'll just skip parsing
                     pass
         # Default payloads
-        url_payloads = ["NULL", "*", "' OR 1=1 --", "<script>alert(1)</script>"]
-        body_payloads = ["NULL", "*", "' OR 1=1 --", "<img src=x onerror=alert(1)>"]
+        url_payloads = ["null", "*", "' OR 1=1 --", "<script>alert(1)</script>"]
+        body_payloads = ["null", "*", "' OR 1=1 --", "<img src=x onerror=alert(1)>"]
         return url_params, url_payloads, body_params, body_payloads
 
     # IMessageEditorController methods
@@ -2037,10 +2127,16 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     # Build a header name -> value map for this role
                     role_headers = {h['header'].strip().lower(): h['value'] for h in role.get('headers', []) if h.get('header')}
                     for h in base_headers:
-                        hname = h.split(":", 1)[0].strip() if ":" in h else ""
-                        if hname.lower() in role_headers:
-                            modified_headers.append("%s: %s" % (hname, role_headers[hname.lower()]))
-                            used_headers.add(hname.lower())
+                        if ':' in h:
+                            hname, hval = h.split(':', 1)
+                            hname_stripped = hname.strip()
+                            hname_lc = hname_stripped.lower()
+                            if hname_lc in role_headers:
+                                # Use original header name, but value from role
+                                modified_headers.append("%s: %s" % (hname_stripped, role_headers[hname_lc]))
+                                used_headers.add(hname_lc)
+                            else:
+                                modified_headers.append(h)
                         else:
                             modified_headers.append(h)
                     # Add per-role extra header if enabled
@@ -2054,12 +2150,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 extra_found = True
                                 break
                         if not extra_found:
-                            insert_idx = 1
-                            for i, h in enumerate(modified_headers):
-                                if ':' in h and h.split(':', 1)[0].strip().lower() in used_headers:
-                                    insert_idx = i + 1
-                                    break
-                            modified_headers.insert(insert_idx, "%s: %s" % (extra_name, extra_value))
+                            modified_headers.append("%s: %s" % (extra_name, extra_value))
                     # Build request
                     new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body
                     mod_req_bytes = self.helpers.stringToBytes(new_req_str)
@@ -2386,12 +2477,6 @@ class ClosableTabComponent(JPanel):
                         if idx < len(self.bac_parent.role_data):
                             del self.bac_parent.role_data[idx]
                             self.bac_parent.save_state()
-
-
-            # DO NOT add a new tab here, even if this was the last one.
-            # After this, if the only tab left is "+", that's correct!
-
-                    # If NO tabs left except "+", add a single blank role tab
         self.close_button.addActionListener(CloseListener())
         self.add(self.close_button)
         # Mouse listener for switching/renaming
@@ -2402,7 +2487,6 @@ class ClosableTabComponent(JPanel):
             self.enable_checkbox.setSelected(checked)
     def setTitle(self, title):
         self.label.setText(title)
-
     class TabMouseListener(MouseAdapter):
         def __init__(self, parent):
             MouseAdapter.__init__(self)
@@ -2424,11 +2508,9 @@ class ClosableTabComponent(JPanel):
                             if idx < len(self.parent.bac_parent.role_data):
                                 self.parent.bac_parent.role_data[idx]["label"] = name
                                 self.save_state()
-
     class IgnoreTabSwitchListener(MouseAdapter):
         def mouseClicked(self, evt):
             evt.consume()
-
     def on_checkbox_toggle(self, event):
         # Update the enabled state in role_data
         if self.bac_parent is not None and self.role_idx is not None:

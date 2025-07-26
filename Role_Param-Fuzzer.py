@@ -81,6 +81,25 @@ def set_nested_value(obj, path, value):
     set_recursively(obj, keys, value)
     return obj
 
+
+def coerce_json_value(payload):
+    """
+    Mini type-hinting syntax for users:
+      - If it starts with '='  -> parse the rest with json.loads (raw JSON literal)
+      - If it starts with 'json:' or 'raw:' -> parse the rest with json.loads (raw)
+      - If it starts with 'str:' -> force string (strip the prefix)
+      - Otherwise -> keep original string (current behavior)
+    """
+    p = payload.strip()
+    if p.startswith('='):
+        return json.loads(p[1:].strip())
+    if p.lower().startswith('json:') or p.lower().startswith('raw:'):
+        return json.loads(p.split(':', 1)[1].strip())
+    if p.lower().startswith('str:'):
+        return p.split(':', 1)[1]
+    return payload
+
+
 def to_pairs(l):
     if not l:
         return []
@@ -1889,7 +1908,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     pass
         # Default payloads
         url_payloads = ["null", "*", "' OR 1=1 --", "<script>alert(1)</script>"]
-        body_payloads = ["null", "*", "' OR 1=1 --", "<img src=x onerror=alert(1)>"]
+        body_payloads = ["=null", "*", "' OR 1=1 --", "<img src=x onerror=alert(1)>"]
         return url_params, url_payloads, body_params, body_payloads
 
     # IMessageEditorController methods
@@ -1987,9 +2006,26 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         param_types[p.getName()] = p.getType()
                 history = []
 
-                # Check for JSON body
-                headers, body = req_str.split("\r\n\r\n", 1) if "\r\n\r\n" in req_str else (req_str, "")
-                is_json = "content-type: application/json" in headers.lower() and body.strip().startswith("{")
+                # Check for JSON body - detect JSON by content, not just content-type
+                headers_str, body_str = req_str.split("\r\n\r\n", 1) if "\r\n\r\n" in req_str else (req_str, "")
+                content_type = ""
+                for header in headers_str.split("\r\n"):
+                    if header.lower().startswith("content-type:"):
+                        content_type = header.lower()
+                        break
+                
+                # Check if body is JSON regardless of content-type
+                is_json_body = False
+                try:
+                    if body_str.strip():
+                        json.loads(body_str.strip())
+                        is_json_body = True
+                except:
+                    is_json_body = False
+                
+                # Use JSON handling if either content-type says JSON OR body is valid JSON
+                is_json = (("application/json" in content_type) or 
+                        (is_json_body and body_str.strip().startswith(("{", "["))))
 
                 # --- Attack URL params (type 0) ---
                 for pname in url_params:
@@ -2015,19 +2051,76 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         history.append(entry)
 
                 # --- Attack body/form params (type 1) ---
-                # Only run if NOT JSON (fixes duplicate issue)
+                # Only skip body param attacks if it's JSON (we handle JSON separately)
                 if not is_json:
+                    # Process body parameters
                     for pname in body_params:
                         for payload in body_payloads:
                             mod_req_bytes = bytearray(req_bytes)
-                            found = False
+                            found_existing_param = False
+                            
+                            # Remove existing parameter if it exists
                             for p in params:
                                 if p.getName() == pname and p.getType() == 1:
                                     mod_req_bytes = self.helpers.removeParameter(mod_req_bytes, p)
-                                    found = True
-                            new_param = self.helpers.buildParameter(pname, payload, 1)
-                            mod_req_bytes = self.helpers.addParameter(mod_req_bytes, new_param)
-                            # Rebuild Content-Length
+                                    found_existing_param = True
+                            
+                            # For text/plain content, we might need to handle body parameters differently
+                            # Check if this is a text/plain request
+                            if "text/plain" in content_type:
+                                # For text/plain, manually modify the body content
+                                analyzed_temp = self.helpers.analyzeRequest(service, mod_req_bytes)
+                                body_offset_temp = analyzed_temp.getBodyOffset()
+                                current_body = self.helpers.bytesToString(mod_req_bytes[body_offset_temp:])
+                                
+                                # Try to replace parameter in body text
+                                # This is a simple approach - you might need to customize based on your body format
+                                if pname in current_body:
+                                    # Replace existing parameter value
+                                    import re
+                                    # Pattern to match parameter=value or parameter:value or just parameter value
+                                    patterns = [
+                                        r'(' + re.escape(pname) + r'=)[^&\s\n]*',
+                                        r'(' + re.escape(pname) + r':)[^,\s\n]*',
+                                        r'(' + re.escape(pname) + r'\s+)[^\s\n]*'
+                                    ]
+                                    
+                                    modified_body = current_body
+                                    for pattern in patterns:
+                                        if re.search(pattern, current_body):
+                                            modified_body = re.sub(pattern, r'\1' + payload, current_body)
+                                            break
+                                    
+                                    if modified_body != current_body:
+                                        # Reconstruct the request with modified body
+                                        headers_temp = list(analyzed_temp.getHeaders())
+                                        headers_temp = [h for h in headers_temp if not h.lower().startswith("content-length")]
+                                        headers_temp.append("Content-Length: %d" % len(modified_body))
+                                        mod_req_bytes = self.helpers.buildHttpMessage(headers_temp, self.helpers.stringToBytes(modified_body))
+                                        found_existing_param = True
+                                else:
+                                    # Add parameter to body if it doesn't exist
+                                    if current_body:
+                                        # Add parameter at the end of body with appropriate separator
+                                        if current_body.endswith('\n'):
+                                            modified_body = current_body + pname + '=' + payload
+                                        else:
+                                            modified_body = current_body + '\n' + pname + '=' + payload
+                                    else:
+                                        modified_body = pname + '=' + payload
+                                    
+                                    headers_temp = list(analyzed_temp.getHeaders())
+                                    headers_temp = [h for h in headers_temp if not h.lower().startswith("content-length")]
+                                    headers_temp.append("Content-Length: %d" % len(modified_body))
+                                    mod_req_bytes = self.helpers.buildHttpMessage(headers_temp, self.helpers.stringToBytes(modified_body))
+                                    found_existing_param = True
+                            else:
+                                # For other content types, use Burp's parameter handling
+                                new_param = self.helpers.buildParameter(pname, payload, 1)
+                                mod_req_bytes = self.helpers.addParameter(mod_req_bytes, new_param)
+                                found_existing_param = True
+                            
+                            # Rebuild Content-Length one more time to ensure it's correct
                             analyzed_mod = self.helpers.analyzeRequest(service, mod_req_bytes)
                             headers_mod = list(analyzed_mod.getHeaders())
                             body_offset_mod = analyzed_mod.getBodyOffset()
@@ -2035,25 +2128,28 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
                             headers_mod.append("Content-Length: %d" % len(body_mod))
                             mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod)
-                            if found or mod_req_bytes != req_bytes:
+                            
+                            # Only send request if we actually modified something or found a parameter
+                            if found_existing_param or mod_req_bytes != req_bytes:
                                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
                                 mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
                                 entry = MessageHistoryEntry(mod_req_bytes, resp.getResponse(), param_name=pname, payload=payload)
                                 entry.highlight = mark
                                 history.append(entry)
 
-                # --- Attack JSON body keys if Content-Type is JSON ---
+                # --- Attack JSON body keys if body is JSON ---
                 if is_json:
                     try:
-                        jbody = json.loads(body, strict=False)
+                        jbody = json.loads(body_str, strict=False)
                         if isinstance(jbody, (dict, list)):
                             for key_path in body_params:
                                 for payload in body_payloads:
                                     jbody_mod = deepcopy(jbody)
                                     try:
-                                        set_nested_value(jbody_mod, key_path, payload)
+                                        val = coerce_json_value(payload)
+                                        set_nested_value(jbody_mod, key_path, val)
                                         body_mod = json.dumps(jbody_mod)
-                                        req_mod = headers + "\r\n\r\n" + body_mod
+                                        req_mod = headers_str + "\r\n\r\n" + body_mod
                                         mod_req_bytes = self.helpers.stringToBytes(req_mod)
                                         # Rebuild Content-Length
                                         analyzed_mod = self.helpers.analyzeRequest(service, mod_req_bytes)
@@ -2090,7 +2186,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 # import traceback
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Attack Error:\n" + str(e) + "\n" + traceback.format_exc()))
         threading.Thread(target=worker).start()
-
+        
     def bac_check(self, event):
         def worker():
             try:

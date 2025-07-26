@@ -99,6 +99,30 @@ Click Attack to begin fuzzing
 BAC Testing
 Go to the BAC Check tab
 
+for paylaod formatting
+| Prefix        | What It Does                                                    | Injects Payload As |
+| ------------- | --------------------------------------------------------------- | ------------------ |
+| *(no prefix)* | **Default**: Treated as a string                                | `"your_input"`     |
+| `=`           | Parses the rest as raw **JSON** (quick shortcut)                | any JSON type      |
+| `json:`       | Same as `=`, but more explicit                                  | any JSON type      |
+| `raw:`        | Alias for `json:` — just a more readable alternative            | any JSON type      |
+| `str:`        | Forces the value to be a **string**, even if it looks like JSON | `"your_input"`     |
+
+examples
+
+| Payload Input | Interpreted As   | Result Injected in JSON |
+| ------------- | ---------------- | ----------------------- |
+| `admin`       | Default → string | `"admin"`               |
+| `=true`       | Raw JSON boolean | `true`                  |
+| `=123`        | Raw JSON number  | `123`                   |
+| `={"a":1}`    | Raw JSON object  | `{"a":1}`               |
+| `json:false`  | Raw JSON boolean | `false`                 |
+| `raw:[1,2,3]` | Raw JSON array   | `[1,2,3]`               |
+| `str:true`    | Force string     | `"true"`                |
+| `str:{"a":1}` | Force string     | `"{"a":1}"`             |
+| `true`        | Default → string | `"true"`                |
+
+
 Configure user roles with the appropriate headers
 
 Click Access Check to test for access control flaws

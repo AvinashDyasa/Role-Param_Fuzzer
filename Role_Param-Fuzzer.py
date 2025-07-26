@@ -14,7 +14,7 @@ from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorControl
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
     SwingUtilities, JFileChooser, JSplitPane, JTable, JScrollPane, JTextField, JCheckBox, DefaultCellEditor, BorderFactory, BoxLayout, Box,
-    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList
+    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager
 )
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
@@ -341,7 +341,7 @@ class PayloadSidePanel(JPanel):
         # import javax.swing  # for BoxLayout
         self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
         self.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createTitledBorder("Inspector"),
+            BorderFactory.createTitledBorder("Param Probe"),
             BorderFactory.createEmptyBorder(10, 10, 10, 10)
         ))
         # Set editable=False for parameter tables, editable=True for payload tables
@@ -382,7 +382,7 @@ class BACCheckPanel(JPanel):
         self.on_save_callback = on_save_callback
         self.callbacks = callbacks
         self.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createTitledBorder("BAC Check"),
+            BorderFactory.createTitledBorder("Role Probe"),
             BorderFactory.createEmptyBorder(10, 10, 10, 10)
         ))
         self.setLayout(BorderLayout())
@@ -1024,7 +1024,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         main_split.setOneTouchExpandable(True)
         self.main_split = main_split
 
-        # -- Prepare Inspector and BAC Check panels --
+        # -- Prepare Param Probe and Role Probe panels --
         if base_message is not None:
             req_bytes = base_message.getRequest()
         else:
@@ -1077,8 +1077,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         # --- Custom vertical tab bar with CardLayout ---
         self.card_panel = JPanel(CardLayout())
-        self.card_panel.add(self.payload_panel, "Inspector")
-        self.card_panel.add(self.bac_scroll_panel, "BAC Check")
+        self.card_panel.add(self.payload_panel, "Param Probe")
+        self.card_panel.add(self.bac_scroll_panel, "Role Probe")
 
         self.tab_button_panel = JPanel()
         self.tab_button_panel.setLayout(BoxLayout(self.tab_button_panel, BoxLayout.Y_AXIS))
@@ -1103,15 +1103,15 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 layout = self.card_panel.getLayout()
                 layout.show(self.card_panel, tab_name)
 
-            self.inspector_btn.set_selected(self.current_tab == "Inspector" and not self.tab_collapsed)
-            self.bac_btn.set_selected(self.current_tab == "BAC Check" and not self.tab_collapsed)
+            self.inspector_btn.set_selected(self.current_tab == "Param Probe" and not self.tab_collapsed)
+            self.bac_btn.set_selected(self.current_tab == "Role Probe" and not self.tab_collapsed)
             
             # Re-layout the components with the new sizes
             self.right_panel.revalidate()
             self.resize_sidebar()
                 
-        self.inspector_btn = StackedVerticalTabButton("Inspector", selected=True, on_click=lambda: on_tab_click("Inspector"))
-        self.bac_btn = StackedVerticalTabButton("BAC Check", selected=False, on_click=lambda: on_tab_click("BAC Check"))
+        self.inspector_btn = StackedVerticalTabButton("Param Probe", selected=True, on_click=lambda: on_tab_click("Param Probe"))
+        self.bac_btn = StackedVerticalTabButton("Role Probe", selected=False, on_click=lambda: on_tab_click("Role Probe"))
         self.tab_button_panel.removeAll()
         self.tab_button_panel.add(self.inspector_btn)
         self.tab_button_panel.add(self.bac_btn)
@@ -1151,7 +1151,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         # This can be called on init and when a tab becomes visible.
         def do_reset():
             self.tab_collapsed = True
-            self.current_tab = "Inspector"
+            self.current_tab = "Param Probe"
             self.card_panel.setVisible(False)
             self.right_panel.setPreferredSize(Dimension(self.sidebar_width_collapsed, self.right_panel.getHeight()))
             self.inspector_btn.set_selected(False) # No tabs are "selected" when collapsed
@@ -1837,13 +1837,13 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         # Set up card layout: remove and re-add the panels (if needed)
         obj.card_panel.removeAll()
-        obj.card_panel.add(obj.payload_panel, "Inspector")
-        obj.card_panel.add(obj.bac_panel, "BAC Check")
+        obj.card_panel.add(obj.payload_panel, "Param Probe")
+        obj.card_panel.add(obj.bac_panel, "Role Probe")
 
-        # Always show Inspector tab/card on restore
+        # Always show Param Probe tab/card on restore
         layout = obj.card_panel.getLayout()
-        layout.show(obj.card_panel, "Inspector")
-        obj.current_tab = "Inspector"
+        layout.show(obj.card_panel, "Param Probe")
+        obj.current_tab = "Param Probe"
         obj.tab_collapsed = False
 
         # Restore attack history
@@ -2193,7 +2193,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 req_bytes = self.req_editor.getMessage()
                 req_str = self.helpers.bytesToString(req_bytes)
                 service = self.base_message.getHttpService() if self.base_message else self.guess_service_from_request(req_bytes)
-                # ─── NEW: rebuild the request so Content-Length is correct ───
+
+                # Rebuild request for accurate Content-Length
                 analyzed = self.helpers.analyzeRequest(service, req_bytes)
                 headers = list(analyzed.getHeaders())
                 body_offset = analyzed.getBodyOffset()
@@ -2202,54 +2203,63 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 headers.append("Content-Length: %d" % len(body))
                 req_bytes = self.helpers.buildHttpMessage(headers, body)
                 req_str = self.helpers.bytesToString(req_bytes)
-                body = ""
-                if "\r\n\r\n" in req_str:
-                    headers_part, body = req_str.split('\r\n\r\n', 1)
-                    header_lines = headers_part.split('\r\n')
-                else:
-                    header_lines = req_str.split('\r\n')
-                base_headers = []
-                for line in header_lines:
-                    base_headers.append(line)
+
+                # Parse headers
+                header_lines, body = (req_str.split('\r\n\r\n', 1) + [""])[:2]
+                base_headers = header_lines.split('\r\n')
                 history = []
-                # Only use roles that are currently in role_data, have a corresponding tab, and are enabled
+
                 for idx, role in enumerate(list(self.bac_panel.role_data)):
-                    if idx >= self.bac_panel.role_tabs.getTabCount() - 1:
-                        continue  # Skip if not a real role tab
-                    if not role.get("enabled", True):
-                        continue  # Skip if not enabled
-                    modified_headers = []
+                    if idx >= self.bac_panel.role_tabs.getTabCount() - 1 or not role.get("enabled", True):
+                        continue
+
+                    # Build map of headers to override
+                    role_headers = {
+                        h['header'].strip().lower(): h['value']
+                        for h in role.get('headers', []) if h.get('header')
+                    }
+
+                    request_line = base_headers[0]
+                    rest_headers = base_headers[1:]
+
+                    changed_headers = []
+                    unchanged_headers = []
                     used_headers = set()
-                    # Build a header name -> value map for this role
-                    role_headers = {h['header'].strip().lower(): h['value'] for h in role.get('headers', []) if h.get('header')}
-                    for h in base_headers:
+
+                    for h in rest_headers:
                         if ':' in h:
                             hname, hval = h.split(':', 1)
                             hname_stripped = hname.strip()
                             hname_lc = hname_stripped.lower()
                             if hname_lc in role_headers:
-                                # Use original header name, but value from role
-                                modified_headers.append("%s: %s" % (hname_stripped, role_headers[hname_lc]))
+                                changed_headers.append("%s: %s" % (hname_stripped, role_headers[hname_lc]))
                                 used_headers.add(hname_lc)
                             else:
-                                modified_headers.append(h)
+                                unchanged_headers.append(h)
                         else:
-                            modified_headers.append(h)
-                    # Add per-role extra header if enabled
+                            unchanged_headers.append(h)
+
+                    # Add any new headers from role not originally present
+                    for hname_lc, hval in role_headers.items():
+                        if hname_lc not in used_headers:
+                            changed_headers.append("%s: %s" % (hname_lc, hval))
+
+                    # Add extra header after changed ones
                     if role.get('extra_enabled') and role.get('extra_name'):
                         extra_name = role.get('extra_name').strip()
                         extra_value = role.get('extra_value', '')
-                        extra_found = False
-                        for idx2, h in enumerate(modified_headers):
-                            if ':' in h and h.split(':', 1)[0].strip().lower() == extra_name.lower():
-                                modified_headers[idx2] = "%s: %s" % (extra_name, extra_value)
-                                extra_found = True
-                                break
-                        if not extra_found:
-                            modified_headers.append("%s: %s" % (extra_name, extra_value))
-                    # Build request
+                        extra_name_lc = extra_name.lower()
+                        unchanged_headers = [
+                            h for h in unchanged_headers
+                            if not (':' in h and h.split(':', 1)[0].strip().lower() == extra_name_lc)
+                        ]
+                        changed_headers.append("%s: %s" % (extra_name, extra_value))
+
+                    # Final assembly
+                    modified_headers = [request_line] + changed_headers + unchanged_headers
                     new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body
                     mod_req_bytes = self.helpers.stringToBytes(new_req_str)
+
                     resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
                     entry = MessageHistoryEntry(
                         mod_req_bytes,
@@ -2258,24 +2268,24 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])])
                     )
                     history.append(entry)
+
                 self.history += history
-                
+
                 def do_ui_update():
                     if history:
                         self.current_idx = len(self.history) - len(history)
                         self.show_entry(self.current_idx)
                     else:
                         self.update_status()
-                    # Defer the resize call to run *after* any UI events from show_entry/update_status
                     self.resize_sidebar()
+
                 SwingUtilities.invokeLater(do_ui_update)
 
                 if self.save_tabs_state_callback:
                     self.save_tabs_state_callback()
+
             except Exception as e:
-                # import traceback
-                SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "BAC Check Error:\n" + str(e) + "\n" + traceback.format_exc()))
-        # import threading
+                SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Role Probe Error:\n" + str(e) + "\n" + traceback.format_exc()))
         threading.Thread(target=worker).start()
 
 
@@ -2349,7 +2359,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         restore(new_payload_panel.body_params_panel, old_state["body_params"])
         restore(new_payload_panel.body_payloads_panel, old_state["body_payloads"])
 
-        # --- 4. Swap in the new panel in the Inspector sub-tab (index 0)
+        # --- 4. Swap in the new panel in the Param Probe sub-tab (index 0)
         self.inspector_tabs.setComponentAt(0, new_payload_panel)
         self.payload_panel = new_payload_panel
 
@@ -2641,47 +2651,74 @@ class StackedVerticalTabButton(JPanel):
         JPanel.__init__(self)
         self.text = text
         self.on_click = on_click
-        self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
+        self.selected = selected
+        self.rollover = False
         self.labels = []
-        button_width = 24
-        button_height = 180
+
+        self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
+        self.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
+        self.setOpaque(True)
+
+        # Set consistent sizing
+        self.setPreferredSize(Dimension(32, 260))
+        self.setMaximumSize(Dimension(32, 260))
+        self.setMinimumSize(Dimension(32, 250))
+
+        self.add(Box.createVerticalGlue())
+        # Create vertical label using stacked JLabels
         for c in text:
             lbl = JLabel(c)
-            lbl.setForeground(Color.BLACK)
             lbl.setAlignmentX(0.5)
             lbl.setHorizontalAlignment(JLabel.CENTER)
             self.add(Box.createVerticalStrut(2))
             self.add(lbl)
             self.labels.append(lbl)
-        # Use system default background (no more orange)
-        self.setBackground(None)
-        self.setPreferredSize(Dimension(button_width, button_height))
-        self.setMaximumSize(Dimension(button_width, button_height))
-        self.setMinimumSize(Dimension(button_width, button_height))
-        self.setBorder(BorderFactory.createEmptyBorder())
-        self.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
-        self.selected = selected
+        self.add(Box.createVerticalGlue())
+
+        # Apply visual style
+        self.apply_style()
+
+        # Add mouse listener for click + hover effect
         self.addMouseListener(self.TabClickListener(self))
-        self.update_highlight()
+
     def set_selected(self, selected):
         self.selected = selected
-        self.update_highlight()
-        self.repaint()
-    def update_highlight(self):
-        # This will underline the selected tab label by making it blue
+        self.apply_style()
+
+    def apply_style(self):
+    # Theme-aware values from UIManager
+        bg_default  = UIManager.getColor("Panel.background") or UIManager.getColor("TabbedPane.background")
+        bg_hover    = UIManager.getColor("TabbedPane.hoverColor") or UIManager.getColor("TabbedPane.selected") or bg_default
+        fg_default  = UIManager.getColor("Label.foreground")
+        border_color = UIManager.getColor("Separator.foreground") or Color.GRAY
+
+        if self.selected or self.rollover:
+            self.setBackground(bg_hover)
+            self.setBorder(BorderFactory.createLineBorder(border_color, 1))  # same border for both
+        else:
+            self.setBackground(bg_default)
+            self.setBorder(BorderFactory.createLineBorder(border_color, 1))
+
         for lbl in self.labels:
-            if self.selected:
-                lbl.setForeground(Color(0, 120, 215))  # Burp blue (or Windows accent blue)
-            else:
-                lbl.setForeground(Color.BLACK)
+            lbl.setForeground(fg_default)
+
+
     class TabClickListener(MouseAdapter):
         def __init__(self, parent):
-            MouseAdapter.__init__(self)
             self.parent = parent
+
         def mouseClicked(self, event):
             if self.parent.on_click:
                 self.parent.on_click()
 
+        def mouseEntered(self, event):
+            self.parent.rollover = True
+            self.parent.apply_style()
+
+        def mouseExited(self, event):
+            self.parent.rollover = False
+            self.parent.apply_style()
+            
 def update_last_payload_state(url_payloads_state, body_payloads_state):
     global LAST_PAYLOAD_STATE
     LAST_PAYLOAD_STATE["url_payloads"] = list(url_payloads_state)

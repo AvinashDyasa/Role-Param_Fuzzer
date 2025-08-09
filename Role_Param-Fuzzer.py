@@ -61,25 +61,50 @@ def extract_json_keys_recursive(data, path="", keys=None):
     return keys
 
 def set_nested_value(obj, path, value):
-    keys = re.findall(r'\[\d+\]|[^.]+', path)
-    def set_recursively(sub_obj, sub_keys, val):
-        if not sub_keys:
+    # Split into names and bracket indices separately, e.g.
+    # "contextUrns[0].inner[2]" -> ['contextUrns', '[0]', 'inner', '[2]']
+    tokens = re.findall(r'[^.\[\]]+|\[\d+\]', path)
+
+    def set_recursively(container, idx, val):
+        if idx >= len(tokens):
             return
-        current_key = sub_keys[0]
-        remaining_keys = sub_keys[1:]
-        if current_key.startswith('['):
-            idx = int(current_key.strip('[]'))
-            if not remaining_keys:
-                sub_obj[idx] = val
+
+        tok = tokens[idx]
+        is_last = (idx == len(tokens) - 1)
+
+        if tok.startswith('['):  # list index like [0]
+            i = int(tok[1:-1])
+            # Ensure container is a list
+            if not isinstance(container, list):
+                # If it's None, convert to list; otherwise assume structure is valid JSON
+                raise TypeError("Expected list while setting %s in path %s" % (tok, path))
+            # Grow list if needed
+            while len(container) <= i:
+                container.append(None)
+            if is_last:
+                container[i] = val
             else:
-                set_recursively(sub_obj[idx], remaining_keys, val)
+                # Ensure next level exists
+                if container[i] is None:
+                    # Decide next node type based on next token
+                    nxt = tokens[idx + 1]
+                    container[i] = [] if nxt.startswith('[') else {}
+                set_recursively(container[i], idx + 1, val)
         else:
-            if not remaining_keys:
-                sub_obj[current_key] = val
+            # dict key
+            if not isinstance(container, dict):
+                raise TypeError("Expected dict while setting %s in path %s" % (tok, path))
+            if is_last:
+                container[tok] = val
             else:
-                set_recursively(sub_obj[current_key], remaining_keys, val)
-    set_recursively(obj, keys, value)
+                if tok not in container or container[tok] is None:
+                    nxt = tokens[idx + 1]
+                    container[tok] = [] if nxt.startswith('[') else {}
+                set_recursively(container[tok], idx + 1, val)
+
+    set_recursively(obj, 0, value)
     return obj
+
 
 
 def coerce_json_value(payload):
@@ -375,9 +400,10 @@ class PayloadSidePanel(JPanel):
 
 ### ------------------ BAC tab ----------------------------
 class BACCheckPanel(JPanel):
-    def __init__(self, host, req_headers, on_save_callback=None, callbacks=None):
+    def __init__(self, host, req_headers, on_save_callback=None, callbacks=None, single_check_handler=None):
         JPanel.__init__(self)
         self.host = host
+        self.single_check_handler = single_check_handler
         self.req_headers = req_headers
         self.on_save_callback = on_save_callback
         self.callbacks = callbacks
@@ -855,7 +881,25 @@ class BACCheckPanel(JPanel):
         extra_name.addCaretListener(lambda evt: on_extra_name_change())
         extra_val.addCaretListener(lambda evt: on_extra_val_change())
 
+        action_row = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        check_btn = JButton("Check this role")
+
+        def run_single_role(evt=None):
+            try:
+                # Determine current role index dynamically (works even after reordering)
+                idx = self.role_tabs.indexOfComponent(panel)
+                plus_idx = self.role_tabs.getTabCount() - 1
+                if idx >= 0 and idx < plus_idx and self.single_check_handler:
+                    self.single_check_handler(idx)
+            except Exception as e:
+                JOptionPane.showMessageDialog(panel, "Error: " + str(e))
+
+        action_row.add(check_btn)
+        check_btn.addActionListener(lambda e: run_single_role())
+        panel.add(action_row)
+
         return panel
+    
     def add_plus_tab(self):
         btn = JButton("+")
         btn.setPreferredSize(Dimension(32, 24))
@@ -993,8 +1037,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         # --- Bottom Panel (Save, Export, Screenshot) ---
         self.save_btn = JButton("Save State", actionPerformed=self.on_save_state)
-        self.export_all_btn = JButton("Export All Results", actionPerformed=self.exportAllTabs)
-        self.merge_all_btn = JButton("Merge All Results", actionPerformed=self.mergeAllTabs)
+        self.export_all_btn = JButton("Export Results", actionPerformed=self.exportAllTabs)
+        self.merge_all_btn = JButton("Merge Results", actionPerformed=self.mergeAllTabs)
         left_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
         left_panel.add(self.save_btn)
         left_panel.add(self.export_all_btn)
@@ -1003,17 +1047,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         bottom_panel.add(left_panel, BorderLayout.WEST)
 
         btn_panel = JPanel(FlowLayout(FlowLayout.RIGHT))
-        self.merge_btn = JButton("Merge Results", actionPerformed=self.mergeResults)
-        self.export_btn = JButton("Export Results", actionPerformed=self.exportResults)
         self.screenshot_btn = JButton("Take Screenshot", actionPerformed=self.takeScreenshot)
         self.export_tabs_btn = JButton("Export Tabs", actionPerformed=self.exportTabsForImport)
         self.merge_export_tabs_btn = JButton("Merge Export", actionPerformed=(lambda e: self.parent_extender.mergeExportTabsForImport(e)))
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)
+
         btn_panel.add(self.export_tabs_btn)
         btn_panel.add(self.merge_export_tabs_btn)
         btn_panel.add(self.import_tabs_btn)
-        btn_panel.add(self.merge_btn)
-        btn_panel.add(self.export_btn)
         btn_panel.add(self.screenshot_btn)
         bottom_panel.add(btn_panel, BorderLayout.EAST)
         self.add(bottom_panel, BorderLayout.SOUTH)
@@ -1064,7 +1105,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.bac_panel.add(JLabel("NO HEADERS FOUND. Load or send a real request."))
         else:
             try:
-                self.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(self.callbacks), callbacks=self.callbacks)
+                self.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(self.callbacks), callbacks=self.callbacks, single_check_handler=lambda idx: self.bac_check_single(idx))
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
                 # import traceback
@@ -1194,182 +1235,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 return str(b)
         except Exception:
             return "<<Non-UTF8 content, omitted>>"
-
-    def exportResults(self, event):
-        try:
-
-            # Unique key for last export directory
-            LAST_EXPORT_DIR_KEY = "last-export-directory"
-
-            req_bytes = self.req_editor.getMessage()
-            req_str = self.helpers.bytesToString(req_bytes)
-            path = "fuzz_results"
-            m = re.search(r"(?:GET|POST|PUT|DELETE|PATCH)\s+([^\s?]+)", req_str)
-            if m:
-                path = m.group(1).replace("/", "_").strip("_")
-            default_file = File(path + ".txt")
-
-            # --- Remember last used export folder ---
-            last_dir = load_setting(self.callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
-
-            chooser.setSelectedFile(default_file)
-            chooser.setDialogTitle("Save Fuzz Results As")
-            if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
-                file = chooser.getSelectedFile()
-                out_path = file.getAbsolutePath()
-                if not out_path.endswith(".txt"):
-                    out_path += ".txt"
-
-                # --- Begin fix: find a non-conflicting filename ---
-                def get_nonconflicting_filename(filepath):
-                    base, ext = os.path.splitext(filepath)
-                    counter = 1
-                    new_filepath = filepath
-                    while os.path.exists(new_filepath):
-                        new_filepath = "%s(%d)%s" % (base, counter, ext)
-                        counter += 1
-                    return new_filepath
-                out_path = get_nonconflicting_filename(out_path)
-                # --- End fix ---
-
-                # Save directory for next time
-                save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
-
-                # Build API line as before
-                service = self.getHttpService()
-                api_string = ""
-                if service:
-                    analyzed = self.helpers.analyzeRequest(service, req_bytes)
-                    method = analyzed.getMethod()
-                    url = analyzed.getUrl()
-                    full_url = "%s://%s%s" % (url.getProtocol(), url.getHost(), url.getFile())
-                    request_line = "%s %s" % (method, full_url)
-                    body_offset = analyzed.getBodyOffset()
-                    body = req_str[body_offset:]
-                    if body.strip():
-                        api_string = request_line + "\n\n" + body.strip()
-                    else:
-                        api_string = request_line
-                else:
-                    api_string = req_str.split('\r\n', 1)[0]
-
-                MAX_RESPONSE_LENGTH = 10000
-                def safe_truncate(text, maxlen):
-                    if text is None:
-                        return ""
-                    if len(text) > maxlen:
-                        return text[:maxlen] + u"\n--------- Truncated ---------\n"
-                    return text
-
-                # import codecs
-                with codecs.open(out_path, "w", encoding="utf-8") as f:
-                    f.write(u"API: %s\n\n" % api_string)
-                    for idx, entry in enumerate(self.history):
-                        req_text = self.get_bytes_as_text(entry.req_bytes)
-                        resp_text = self.get_bytes_as_text(entry.resp_bytes)
-                        resp_text = safe_truncate(resp_text, MAX_RESPONSE_LENGTH)
-                        param = getattr(entry, "param_name", "") or ""
-                        value = getattr(entry, "payload", "") or ""
-
-                        f.write(u"---- Attack #%d ----\n" % (idx + 1))
-                        f.write(u"Param/Role: %s\n" % param)
-                        f.write(u"Value: %s\n\n" % value)
-                        f.write(u"Request:\n%s\n\n" % req_text)
-                        f.write(u"Response:\n%s\n" % resp_text)
-                        f.write(u"-------------------\n\n")
-                JOptionPane.showMessageDialog(self, "Exported fuzz results to:\n" + out_path)
-        except Exception as e:
-            # import traceback
-            JOptionPane.showMessageDialog(self, "Error exporting results:\n" + str(e) + "\n" + traceback.format_exc())
-
-    def mergeResults(self, event):
-        try:
-
-            # Unique key for last export directory
-            LAST_EXPORT_DIR_KEY = "last-export-directory"
-
-            req_bytes = self.req_editor.getMessage()
-            req_str = self.helpers.bytesToString(req_bytes)
-            path = "fuzz_results"
-            m = re.search(r"(?:GET|POST|PUT|DELETE|PATCH)\s+([^\s?]+)", req_str)
-            if m:
-                path = m.group(1).replace("/", "_").strip("_")
-            default_file = File(path + ".txt")
-
-            # --- Remember last used export folder ---
-            last_dir = load_setting(self.callbacks, LAST_EXPORT_DIR_KEY)
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
-
-            chooser.setSelectedFile(default_file)
-            chooser.setDialogTitle("Append Fuzz Results To (Choose a .txt file)")
-            if chooser.showOpenDialog(None) == JFileChooser.APPROVE_OPTION:
-                file = chooser.getSelectedFile()
-                out_path = file.getAbsolutePath()
-                if not out_path.endswith(".txt"):
-                    out_path += ".txt"
-
-                # Save directory for next time
-                save_setting(self.callbacks, LAST_EXPORT_DIR_KEY, os.path.dirname(out_path))
-
-                # Build API line as before
-                service = self.getHttpService()
-                api_string = ""
-                if service:
-                    analyzed = self.helpers.analyzeRequest(service, req_bytes)
-                    method = analyzed.getMethod()
-                    url = analyzed.getUrl()
-                    full_url = "%s://%s%s" % (url.getProtocol(), url.getHost(), url.getFile())
-                    request_line = "%s %s" % (method, full_url)
-                    body_offset = analyzed.getBodyOffset()
-                    body = req_str[body_offset:]
-                    if body.strip():
-                        api_string = request_line + "\n\n" + body.strip()
-                    else:
-                        api_string = request_line
-                else:
-                    api_string = req_str.split('\r\n', 1)[0]
-
-                MAX_RESPONSE_LENGTH = 10000
-                def safe_truncate(text, maxlen):
-                    if text is None:
-                        return ""
-                    if len(text) > maxlen:
-                        return text[:maxlen] + u"\n--------- Truncated ---------\n"
-                    return text
-
-                # import codecs
-                with codecs.open(out_path, "a", encoding="utf-8") as f:  # 'a' for append
-                    tab_name = "This Tab"
-                    if hasattr(self, "parent_extender") and self.parent_extender:
-                        tab_name = self.parent_extender.tabs.getTitleAt(
-                            self.parent_extender.tabs.indexOfComponent(self)
-                        )
-                    f.write(u"\n\nMERGED FUZZ RESULTS: %s\n" % tab_name)
-                    f.write(u"API: %s\n\n" % api_string)
-                    for idx, entry in enumerate(self.history):
-                        req_text = self.get_bytes_as_text(entry.req_bytes)
-                        resp_text = self.get_bytes_as_text(entry.resp_bytes)
-                        resp_text = safe_truncate(resp_text, MAX_RESPONSE_LENGTH)
-                        param = getattr(entry, "param_name", "") or ""
-                        value = getattr(entry, "payload", "") or ""
-
-                        f.write(u"---- Attack #%d ----\n" % (idx + 1))
-                        f.write(u"Param/Role: %s\n" % param)
-                        f.write(u"Value: %s\n\n" % value)
-                        f.write(u"Request:\n%s\n\n" % req_text)
-                        f.write(u"Response:\n%s\n" % resp_text)
-                        f.write(u"-------------------\n\n")
-                JOptionPane.showMessageDialog(self, "Merged fuzz results into:\n" + out_path)
-        except Exception as e:
-            # import traceback
-            JOptionPane.showMessageDialog(self, "Error merging results:\n" + str(e) + "\n" + traceback.format_exc())
 
     def exportAllTabs(self, event):
         try:
@@ -1814,7 +1679,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             obj.bac_panel.add(JLabel("NO HEADERS FOUND. Load or send a real request."))
         else:
             try:
-                obj.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(callbacks), callbacks=callbacks)
+                obj.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(callbacks), callbacks=callbacks, single_check_handler=lambda idx: obj.bac_check_single(idx))
                 # Restore BAC roles if present
                 if "bac_roles" in data and hasattr(obj.bac_panel, "role_data"):
                     obj.bac_panel.role_data = []
@@ -2030,7 +1895,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 # --- Attack URL params (type 0) ---
                 for pname in url_params:
                     for payload in url_payloads:
-                        mod_req_bytes = bytearray(req_bytes)
+                        mod_req_bytes = req_bytes
                         for p in params:
                             if p.getName() == pname and p.getType() == 0:
                                 mod_req_bytes = self.helpers.removeParameter(mod_req_bytes, p)
@@ -2056,7 +1921,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     # Process body parameters
                     for pname in body_params:
                         for payload in body_payloads:
-                            mod_req_bytes = bytearray(req_bytes)
+                            mod_req_bytes = req_bytes
                             found_existing_param = False
                             
                             # Remove existing parameter if it exists
@@ -2286,6 +2151,104 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
             except Exception as e:
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Role Probe Error:\n" + str(e) + "\n" + traceback.format_exc()))
+        threading.Thread(target=worker).start()
+
+    def bac_check_single(self, role_idx):
+        def worker():
+            try:
+                req_bytes = self.req_editor.getMessage()
+                service = self.base_message.getHttpService() if self.base_message else self.guess_service_from_request(req_bytes)
+
+                # Rebuild request for accurate Content-Length
+                analyzed = self.helpers.analyzeRequest(service, req_bytes)
+                headers = list(analyzed.getHeaders())
+                body_offset = analyzed.getBodyOffset()
+                body = req_bytes[body_offset:]
+                headers = [h for h in headers if not h.lower().startswith("content-length")]
+                headers.append("Content-Length: %d" % len(body))
+                req_bytes = self.helpers.buildHttpMessage(headers, body)
+                req_str = self.helpers.bytesToString(req_bytes)
+
+                # Split headers/body
+                header_lines, body_part = (req_str.split('\r\n\r\n', 1) + [""])[:2]
+                base_headers = header_lines.split('\r\n')
+
+                # Validate role_idx against current tabs (exclude +)
+                if not hasattr(self, "bac_panel") or not hasattr(self.bac_panel, "role_tabs"):
+                    SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Role UI not ready."))
+                    return
+
+                plus_idx = self.bac_panel.role_tabs.getTabCount() - 1
+                if role_idx < 0 or role_idx >= plus_idx or role_idx >= len(self.bac_panel.role_data):
+                    SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Invalid role index."))
+                    return
+
+                role = self.bac_panel.role_data[role_idx]
+                if not role.get("enabled", True):
+                    # still allow single check even if globally disabled (that’s the point)
+                    pass
+
+                # Build header map to override
+                role_headers = {
+                    h['header'].strip().lower(): h['value']
+                    for h in role.get('headers', []) if h.get('header')
+                }
+
+                request_line = base_headers[0]
+                rest_headers = base_headers[1:]
+
+                changed_headers, unchanged_headers, used = [], [], set()
+                for h in rest_headers:
+                    if ':' in h:
+                        hn, hv = h.split(':', 1)
+                        hn_stripped = hn.strip()
+                        hn_lc = hn_stripped.lower()
+                        if hn_lc in role_headers:
+                            changed_headers.append("%s: %s" % (hn_stripped, role_headers[hn_lc]))
+                            used.add(hn_lc)
+                        else:
+                            unchanged_headers.append(h)
+                    else:
+                        unchanged_headers.append(h)
+
+                # Add headers present only in role
+                for hn_lc, hval in role_headers.items():
+                    if hn_lc not in used:
+                        changed_headers.append("%s: %s" % (hn_lc, hval))
+
+                # Extra header support
+                if role.get('extra_enabled') and role.get('extra_name'):
+                    ename = role.get('extra_name', '').strip()
+                    eval_ = role.get('extra_value', '')
+                    ename_lc = ename.lower()
+                    unchanged_headers = [
+                        h for h in unchanged_headers
+                        if not (':' in h and h.split(':', 1)[0].strip().lower() == ename_lc)
+                    ]
+                    changed_headers.append("%s: %s" % (ename, eval_))
+
+                # Final request
+                modified_headers = [request_line] + changed_headers + unchanged_headers
+                new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body_part
+                mod_req_bytes = self.helpers.stringToBytes(new_req_str)
+
+                resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+                entry = MessageHistoryEntry(
+                    mod_req_bytes,
+                    resp.getResponse(),
+                    param_name=role.get('label', 'Role'),
+                    payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])])
+                )
+
+                self.history.append(entry)
+                self.current_idx = len(self.history) - 1
+
+                SwingUtilities.invokeLater(lambda: (self.show_entry(self.current_idx), self.resize_sidebar()))
+                if self.save_tabs_state_callback:
+                    self.save_tabs_state_callback()
+
+            except Exception as e:
+                SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Role Probe (single) Error:\n" + str(e) + "\n" + traceback.format_exc()))
         threading.Thread(target=worker).start()
 
 
@@ -2536,6 +2499,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         # Always run on the EDT
         SwingUtilities.invokeLater(do_resize)
 
+    
 
 ### You may add your ClosableTabComponent, PlusTabComponent, and BurpExtender skeleton below as before ###
 
@@ -2723,6 +2687,7 @@ def update_last_payload_state(url_payloads_state, body_payloads_state):
     global LAST_PAYLOAD_STATE
     LAST_PAYLOAD_STATE["url_payloads"] = list(url_payloads_state)
     LAST_PAYLOAD_STATE["body_payloads"] = list(body_payloads_state)
+
 # ---------- Main BurpExtender ----------
 class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
     def registerExtenderCallbacks(self, callbacks):

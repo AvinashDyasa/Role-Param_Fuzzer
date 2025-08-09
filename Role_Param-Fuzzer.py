@@ -8,6 +8,7 @@ import base64
 import codecs
 import traceback
 import os
+import time
 from collections import OrderedDict
 from copy import deepcopy
 from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorController
@@ -1056,7 +1057,15 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         btn_panel.add(self.merge_export_tabs_btn)
         btn_panel.add(self.import_tabs_btn)
         btn_panel.add(self.screenshot_btn)
-        bottom_panel.add(btn_panel, BorderLayout.EAST)
+        right_container = JPanel(BorderLayout())
+        right_container.add(btn_panel, BorderLayout.WEST)
+
+        self.metrics_lbl = JLabel(" ")  # will show: "295 bytes | 11 ms"
+        self.metrics_lbl.setHorizontalAlignment(SwingConstants.RIGHT)
+        self.metrics_lbl.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 8))
+        right_container.add(self.metrics_lbl, BorderLayout.EAST)
+
+        bottom_panel.add(right_container, BorderLayout.EAST)
         self.add(bottom_panel, BorderLayout.SOUTH)
 
         main_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, self.req_editor.getComponent(), self.resp_editor.getComponent())
@@ -1808,9 +1817,13 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 req_bytes = self.helpers.buildHttpMessage(headers, body)
 
                 # now send
+                t0 = time.time()
                 resp = self.callbacks.makeHttpRequest(service, req_bytes)
+                dt_ms = int(round((time.time() - t0) * 1000))
                 resp_bytes = resp.getResponse()
-                entry = MessageHistoryEntry(req_bytes, resp_bytes)
+                size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
+                entry = MessageHistoryEntry(req_bytes, resp_bytes, resp_time_ms=dt_ms, resp_size_bytes=size)
                 self.history.append(entry)
                 self.current_idx = len(self.history) - 1
                 
@@ -1909,9 +1922,15 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
                         headers_mod.append("Content-Length: %d" % len(body_mod))
                         mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod)
+                        t0 = time.time()
                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+                        dt_ms = int(round((time.time() - t0) * 1000))
+                        resp_bytes = resp.getResponse()
+                        size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
                         mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
-                        entry = MessageHistoryEntry(mod_req_bytes, resp.getResponse(), param_name=pname, payload=payload)
+                        entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
+                                                    resp_time_ms=dt_ms, resp_size_bytes=size)
                         entry.highlight = mark
                         history.append(entry)
 
@@ -1996,9 +2015,15 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             
                             # Only send request if we actually modified something or found a parameter
                             if found_existing_param or mod_req_bytes != req_bytes:
+                                t0 = time.time()
                                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+                                dt_ms = int(round((time.time() - t0) * 1000))
+                                resp_bytes = resp.getResponse()
+                                size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
                                 mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
-                                entry = MessageHistoryEntry(mod_req_bytes, resp.getResponse(), param_name=pname, payload=payload)
+                                entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
+                                                            resp_time_ms=dt_ms, resp_size_bytes=size)
                                 entry.highlight = mark
                                 history.append(entry)
 
@@ -2024,8 +2049,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                         headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
                                         headers_mod.append("Content-Length: %d" % len(body_mod_bytes))
                                         mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod_bytes)
+                                        t0 = time.time()
                                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
-                                        entry = MessageHistoryEntry(mod_req_bytes, resp.getResponse(), param_name=key_path, payload=payload)
+                                        dt_ms = int(round((time.time() - t0) * 1000))
+                                        resp_bytes = resp.getResponse()
+                                        size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
+                                        entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=key_path, payload=payload,
+                                                                    resp_time_ms=dt_ms, resp_size_bytes=size)
                                         history.append(entry)
                                     except (KeyError, IndexError, TypeError):
                                         pass
@@ -2125,12 +2156,19 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body
                     mod_req_bytes = self.helpers.stringToBytes(new_req_str)
 
+                    t0 = time.time()
                     resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+                    dt_ms = int(round((time.time() - t0) * 1000))
+                    resp_bytes = resp.getResponse()
+                    size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
                     entry = MessageHistoryEntry(
                         mod_req_bytes,
-                        resp.getResponse(),
+                        resp_bytes,
                         param_name=role['label'],
-                        payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])])
+                        payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])]),
+                        resp_time_ms=dt_ms,
+                        resp_size_bytes=size
                     )
                     history.append(entry)
 
@@ -2232,12 +2270,19 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body_part
                 mod_req_bytes = self.helpers.stringToBytes(new_req_str)
 
+                t0 = time.time()
                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+                dt_ms = int(round((time.time() - t0) * 1000))
+                resp_bytes = resp.getResponse()
+                size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
                 entry = MessageHistoryEntry(
                     mod_req_bytes,
-                    resp.getResponse(),
+                    resp_bytes,
                     param_name=role.get('label', 'Role'),
-                    payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])])
+                    payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])]),
+                    resp_time_ms=dt_ms,
+                    resp_size_bytes=size
                 )
 
                 self.history.append(entry)
@@ -2348,12 +2393,20 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     self.req_editor.setHighlight(-1, -1)
         except:
             pass
+
         if entry.resp_bytes is None:
             self.resp_editor.setMessage(bytearray(), False)
+            if hasattr(self, "metrics_lbl"):
+                self.metrics_lbl.setText(" ")
         else:
             self.resp_editor.setMessage(entry.resp_bytes, False)
-        # --- FIX: Always update the status label! ---
+            if hasattr(self, "metrics_lbl"):
+                size = entry.resp_size_bytes if entry.resp_size_bytes is not None else len(bytearray(entry.resp_bytes))
+                ms = entry.resp_time_ms if entry.resp_time_ms is not None else 0
+                self.metrics_lbl.setText("%d bytes | %d ms" % (size, ms))
+
         self.update_status()
+        
     def show_history_dropdown(self, is_forward=True):
         popup = JPopupMenu()
         entries = self.history
@@ -2688,6 +2741,15 @@ def update_last_payload_state(url_payloads_state, body_payloads_state):
     LAST_PAYLOAD_STATE["url_payloads"] = list(url_payloads_state)
     LAST_PAYLOAD_STATE["body_payloads"] = list(body_payloads_state)
 
+class MessageHistoryEntry(object):
+    def __init__(self, req_bytes, resp_bytes, param_name=None, payload=None, resp_time_ms=None, resp_size_bytes=None):
+        self.req_bytes = req_bytes
+        self.resp_bytes = resp_bytes
+        self.param_name = param_name
+        self.payload = payload
+        self.highlight = None  # (start, end)
+        self.resp_time_ms = resp_time_ms
+        self.resp_size_bytes = resp_size_bytes
 # ---------- Main BurpExtender ----------
 class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
     def registerExtenderCallbacks(self, callbacks):

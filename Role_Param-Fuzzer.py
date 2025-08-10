@@ -21,10 +21,10 @@ from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
     GridBagLayout, GridBagConstraints, Insets, Component
 )
-from java.awt.event import MouseAdapter, ActionListener, MouseEvent, FocusAdapter, KeyAdapter, KeyEvent
+from java.awt.event import MouseAdapter, ActionListener, MouseEvent, FocusAdapter, KeyAdapter, KeyEvent, ComponentAdapter
 from java.util import ArrayList
 from javax.swing.event import ChangeListener
-from java.lang import Boolean
+from java.lang import Boolean, Integer
 from java.io import File
 from javax.imageio import ImageIO
 from java.net import URL
@@ -410,33 +410,59 @@ class BACCheckPanel(JPanel):
         self.callbacks = callbacks
         self.setBorder(BorderFactory.createCompoundBorder(
             BorderFactory.createTitledBorder("Role Probe"),
-            BorderFactory.createEmptyBorder(10, 10, 10, 10)
+            BorderFactory.createEmptyBorder(4, 4, 4, 4)
         ))
         self.setLayout(BorderLayout())
+        self.setMinimumSize(Dimension(450, 500))  # Optimal minimum size for full functionality
         self.role_data = []
         self.role_tabs = JTabbedPane(JTabbedPane.TOP)
-        self.role_tabs.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT)
-        # --- Top panel: Move Left/Right + Enable All + Export/Import ---
-        top_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-        # Add move left/right buttons
-        self.move_left_btn = JButton("<")
+        self.role_tabs.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT)  # Changed to WRAP for grid format
+        self.role_tabs.setTabPlacement(JTabbedPane.TOP)
+        self.role_tabs.setMinimumSize(Dimension(450, 200))  # Match panel minimum width
+        
+        # --- Top panel: compact left-aligned strip -------------------------------
+        top_panel = JPanel(BorderLayout())
+
+        left_strip = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))  # hug the left, zero gaps
+
+        # Move buttons: glued together
+        self.move_left_btn  = JButton("<")
         self.move_right_btn = JButton(">")
-        self.move_left_btn.setPreferredSize(Dimension(24, 24))
-        self.move_right_btn.setPreferredSize(Dimension(24, 24))
-        self.move_left_btn.setFocusable(False)
-        self.move_right_btn.setFocusable(False)
+
+        for b in (self.move_left_btn, self.move_right_btn):
+            b.setPreferredSize(Dimension(30, 28))
+            b.setMinimumSize(Dimension(30, 28))
+            b.setFocusable(False)
+            b.setFont(Font("Dialog", Font.BOLD, 13))
+            b.setMargin(Insets(0, 0, 0, 0))
+
         self.move_left_btn.setToolTipText("Move selected role left")
-        self.move_right_btn.setToolTipText("Move selected role right")
         self.move_left_btn.addActionListener(self.move_selected_left)
+        self.move_right_btn.setToolTipText("Move selected role right")
         self.move_right_btn.addActionListener(self.move_selected_right)
-        top_panel.add(self.move_left_btn)
-        top_panel.add(self.move_right_btn)
+
+        left_strip.add(self.move_left_btn)
+        left_strip.add(self.move_right_btn)
+
+        # Small gap, then Enable all
+        left_strip.add(Box.createHorizontalStrut(8))
         self.enable_all_checkbox = JCheckBox("Enable all", True, actionPerformed=self.toggle_all_roles)
-        top_panel.add(self.enable_all_checkbox)
-        self.export_bac_btn = JButton("Export BAC Roles", actionPerformed=self.export_bac_roles)
-        self.import_bac_btn = JButton("Import BAC Roles", actionPerformed=self.import_bac_roles)
-        top_panel.add(self.export_bac_btn)
-        top_panel.add(self.import_bac_btn)
+        left_strip.add(self.enable_all_checkbox)
+
+        # Bigger Export / Import buttons
+        self.export_bac_btn = JButton("Export Roles", actionPerformed=self.export_bac_roles)
+        self.import_bac_btn = JButton("Import Roles", actionPerformed=self.import_bac_roles)
+        for b in (self.export_bac_btn, self.import_bac_btn):
+            b.setPreferredSize(Dimension(130, 28))
+            b.setMinimumSize(Dimension(120, 28))
+            b.setMargin(Insets(2, 10, 2, 10))
+
+        left_strip.add(Box.createHorizontalStrut(10))
+        left_strip.add(self.export_bac_btn)
+        left_strip.add(Box.createHorizontalStrut(6))
+        left_strip.add(self.import_bac_btn)
+
+        top_panel.add(left_strip, BorderLayout.WEST)
         self.add(top_panel, BorderLayout.NORTH)
         self.add(self.role_tabs, BorderLayout.CENTER)
 
@@ -450,6 +476,39 @@ class BACCheckPanel(JPanel):
         self.ensure_single_plus_tab()
         self.role_tabs.addChangeListener(self.on_tab_change)
         self.update_move_buttons_state()
+        
+        # Add component listener to handle resizing and force proper layout
+        
+        _parent = self  # capture the BACCheckPanel instance
+
+        class ResizeListener(ComponentAdapter):
+            def componentResized(self, event):
+                try:
+                    _parent.role_tabs.revalidate()
+                    _parent.role_tabs.repaint()
+                    top_panel.revalidate()
+                    top_panel.repaint()
+                except Exception:
+                    # Don't crash if components aren't ready during import/restore
+                    pass
+
+        self.addComponentListener(ResizeListener())
+        SwingUtilities.invokeLater(lambda: self.refresh_layout())
+
+    def refresh_layout(self):
+        try:
+            # First pass
+            self.revalidate(); self.repaint()
+            if hasattr(self, "role_tabs"):
+                self.role_tabs.revalidate(); self.role_tabs.repaint()
+            # Second pass (helps stubborn LAFs)
+            SwingUtilities.invokeLater(lambda: (
+                self.revalidate(), self.repaint(),
+                hasattr(self, "role_tabs") and self.role_tabs.revalidate(),
+                hasattr(self, "role_tabs") and self.role_tabs.repaint()
+            ))
+        except Exception:
+            pass
 
     def update_move_buttons_state(self):
         idx = self.role_tabs.getSelectedIndex()
@@ -624,7 +683,6 @@ class BACCheckPanel(JPanel):
         except Exception as e:
             JOptionPane.showMessageDialog(self, "Error importing BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
 
-
     def _add_role_tab_internal(self, label=None, config=None):
         # Used for initial load - appends at end before "+" tab
         plus_idx = self.role_tabs.getTabCount()  # always last
@@ -660,7 +718,7 @@ class BACCheckPanel(JPanel):
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         self.role_tabs.insertTab(role_label, None, panel, None, plus_idx)
-        self.role_tabs.setTabComponentAt(plus_idx, ClosableTabComponent(self.role_tabs, panel, role_label, self))
+        self.role_tabs.setTabComponentAt(plus_idx, ClosableTabComponent(self.role_tabs, panel, role_label, self, role_idx=plus_idx))
         self.role_data.append(role_cfg)
         self.role_tabs.setSelectedIndex(plus_idx)
         self.save_state()
@@ -671,7 +729,6 @@ class BACCheckPanel(JPanel):
             self.on_save_callback(self.host)
 
     def make_role_panel(self, role_cfg, role_idx):
-
         panel = JPanel()
         panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
 
@@ -687,65 +744,87 @@ class BACCheckPanel(JPanel):
         headers_scroll = JScrollPane(wrapper)
         headers_scroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED)
         headers_scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER)
-        # Remove or reduce the preferred size, and add a sensible max size
-        headers_scroll.setPreferredSize(Dimension(200, 150))  # Or even remove this line for fully dynamic sizing
-        headers_scroll.setMaximumSize(Dimension(600, 200))    # Prevent it from overflowing screen
+        # Increased default size for better visibility
+        headers_scroll.setPreferredSize(Dimension(400, 250))
+        headers_scroll.setMinimumSize(Dimension(300, 200))
+        headers_scroll.setMaximumSize(Dimension(800, 400))
         panel.add(headers_scroll)
 
-        # --- Add header row logic ---
+        # --- Add header row logic with improved wrapping and left alignment ---
         def add_header_row(header_val=None):
-
             default_font = Font("Dialog", Font.PLAIN, 12)
 
-            # The row panel stacks two horizontal panels vertically
+            # Main row panel using GridBagLayout for better control
             row = JPanel()
-            row.setLayout(BoxLayout(row, BoxLayout.Y_AXIS))
+            row.setLayout(GridBagLayout())
             row.setAlignmentX(Component.LEFT_ALIGNMENT)
+            row.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2))
 
-            # Top line: Header + dropdown + delete
-            top_line = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-            top_line.setAlignmentX(Component.LEFT_ALIGNMENT)
+            gbc = GridBagConstraints()
+            gbc.insets = Insets(2, 2, 2, 2)
+            gbc.anchor = GridBagConstraints.WEST
+            gbc.fill = GridBagConstraints.HORIZONTAL
 
+            # Header selection - row 0
+            gbc.gridx = 0
+            gbc.gridy = 0
+            gbc.weightx = 0.0
             header_label = JLabel("Header:")
             header_label.setFont(default_font)
+            row.add(header_label, gbc)
 
+            gbc.gridx = 1
+            gbc.weightx = 0.7
             available_headers = list(self.req_headers)
             combo = JComboBox(available_headers)
             combo.setEditable(True)
-            combo.setPreferredSize(Dimension(130, 24))
+            combo.setPreferredSize(Dimension(180, 24))
+            combo.setMinimumSize(Dimension(150, 24))
             combo.setFont(default_font)
             if header_val and "header" in header_val and header_val["header"]:
                 combo.setSelectedItem(header_val["header"])
+            row.add(combo, gbc)
 
+            gbc.gridx = 2
+            gbc.weightx = 0.0
             del_btn = JButton("Delete")
             del_btn.setFont(default_font)
+            del_btn.setPreferredSize(Dimension(80, 24))
+            del_btn.setMinimumSize(Dimension(80, 24))
+            row.add(del_btn, gbc)
 
-            top_line.add(header_label)
-            top_line.add(combo)
-            top_line.add(del_btn)
-
-            # Bottom line: Value + value field
+            # Value input - row 1
+            gbc.gridx = 0
+            gbc.gridy = 1
+            gbc.weightx = 0.0
             value_label = JLabel("Value:")
             value_label.setFont(default_font)
+            row.add(value_label, gbc)
 
+            gbc.gridx = 1
+            gbc.weightx = 0.7
+            gbc.fill = GridBagConstraints.BOTH
             value = header_val["value"] if header_val and "value" in header_val else ""
-            val_field = JTextArea(value, 1, 18)
+            val_field = JTextArea(value, 2, 25)
             val_field.setFont(default_font)
             val_field.setLineWrap(True)
             val_field.setWrapStyleWord(True)
-            val_field.setPreferredSize(Dimension(150, 24))
-            val_field.setMinimumSize(Dimension(80, 24))
-            val_field.setMaximumSize(Dimension(400, 40))
-            val_field.setAlignmentX(Component.LEFT_ALIGNMENT)
 
-            bottom_line = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-            bottom_line.setAlignmentX(Component.LEFT_ALIGNMENT)
-            bottom_line.add(value_label)
-            bottom_line.add(val_field)
+            val_scroll = JScrollPane(val_field)
+            val_scroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED)
+            val_scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER)
+            val_scroll.setPreferredSize(Dimension(250, 50))
+            val_scroll.setMinimumSize(Dimension(200, 40))
+            row.add(val_scroll, gbc)
 
+            gbc.gridx = 2
+            gbc.weightx = 0.0
+            gbc.fill = GridBagConstraints.HORIZONTAL
             edit_btn = JButton("Edit")
             edit_btn.setFont(default_font)
-            bottom_line.add(edit_btn)
+            edit_btn.setPreferredSize(Dimension(80, 24))
+            edit_btn.setMinimumSize(Dimension(80, 24))
+            row.add(edit_btn, gbc)
 
             def open_editor_popup(evt=None):
                 popup_area = JTextArea(val_field.getText(), 10, 60)
@@ -764,8 +843,7 @@ class BACCheckPanel(JPanel):
                 if res == JOptionPane.OK_OPTION:
                     new_text = popup_area.getText()
                     val_field.setText(new_text)
-                    # The existing CaretListener on val_field will handle saving the state.
-            
+
             edit_btn.addActionListener(open_editor_popup)
 
             # Listeners for saving
@@ -823,49 +901,82 @@ class BACCheckPanel(JPanel):
 
             del_btn.addActionListener(delete_row)
 
-            row.add(top_line)
-            row.add(bottom_line)
-
             headers_container.add(row)
             header_rows.append((row, combo, val_field))
             if header_val is None:
                 role_cfg["headers"].append({"header": str(combo.getSelectedItem()), "value": val_field.getText()})
             headers_container.revalidate()
             headers_container.repaint()
-        
-        
+
         header_rows = []
 
         # Add existing headers
         for header_val in role_cfg.get("headers", []):
             add_header_row(header_val)
 
-        # Add header button
+        # Add header button aligned to the left without vertical stretching
+        add_header_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        add_header_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
+
         add_header_btn = JButton("Add header", actionPerformed=lambda evt: add_header_row())
-        add_header_panel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        add_header_btn.setPreferredSize(Dimension(120, 28))
+        add_header_btn.setMinimumSize(Dimension(120, 28))
+        add_header_btn.setMaximumSize(Dimension(120, 28))  # Prevent vertical growth
+        add_header_btn.setMargin(Insets(2, 10, 2, 10))
+
         add_header_panel.add(add_header_btn)
         panel.add(add_header_panel)
 
-        # --- Extra header toggle and fields (unchanged) ---
-        extra_row = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        # --- Extra header section: all rows hug the left edge -----------------------
+        extra_panel = JPanel()
+        extra_panel.setLayout(BoxLayout(extra_panel, BoxLayout.Y_AXIS))
+        extra_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
+
+        # Row 0: checkbox
+        extra_toggle_row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        extra_toggle_row.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
         extra_toggle = JCheckBox("Add extra header")
         extra_toggle.setSelected(role_cfg.get("extra_enabled", False))
-        extra_row.add(extra_toggle)
-        extra_name = JTextField(role_cfg.get("extra_name", ""), 12)
-        extra_val = JTextField(role_cfg.get("extra_value", ""), 18)
-        extra_row.add(JLabel("Header name:"))
-        extra_row.add(extra_name)
-        extra_row.add(JLabel("Value:"))
-        extra_row.add(extra_val)
-        panel.add(extra_row)
+        extra_toggle_row.add(extra_toggle)
+        extra_panel.add(extra_toggle_row)
+
+        # Row 1: header name
+        extra_name_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        extra_name_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
+        extra_name_label = JLabel("Header name:")
+        extra_name_panel.add(extra_name_label)
+        extra_name = JTextField(role_cfg.get("extra_name", ""), 15)
+        extra_name.setPreferredSize(Dimension(150, 24))
+        extra_name.setMinimumSize(Dimension(150, 24))
+        extra_name.setMaximumSize(Dimension(150, 24))  # prevent vertical growth
+        extra_name_panel.add(extra_name)
+        extra_panel.add(extra_name_panel)
+
+        # Row 2: value
+        extra_val_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        extra_val_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
+        extra_val_label = JLabel("Value:")
+        extra_val_panel.add(extra_val_label)
+        extra_val = JTextField(role_cfg.get("extra_value", ""), 20)
+        extra_val.setPreferredSize(Dimension(200, 24))
+        extra_val.setMinimumSize(Dimension(200, 24))
+        extra_val.setMaximumSize(Dimension(200, 24))   # prevent vertical growth
+        extra_val_panel.add(extra_val)
+        extra_panel.add(extra_val_panel)
+
+        panel.add(extra_panel)
 
         def update_extra_fields():
             show = extra_toggle.isSelected()
-            extra_name.setVisible(show)
-            extra_val.setVisible(show)
+            extra_name_panel.setVisible(show)
+            extra_val_panel.setVisible(show)
             role_cfg["extra_enabled"] = show
             if self.on_save_callback:
                 self.on_save_callback(self.host)
+            # refresh layout
+            extra_panel.revalidate(); extra_panel.repaint()
+            panel.revalidate(); panel.repaint()
+
         extra_toggle.addActionListener(lambda evt: update_extra_fields())
         update_extra_fields()
 
@@ -873,17 +984,28 @@ class BACCheckPanel(JPanel):
             role_cfg["extra_name"] = extra_name.getText()
             if self.on_save_callback:
                 self.on_save_callback(self.host)
+
         def on_extra_val_change(evt=None):
             role_cfg["extra_value"] = extra_val.getText()
             if self.on_save_callback:
                 self.on_save_callback(self.host)
+
         extra_name.addActionListener(on_extra_name_change)
         extra_val.addActionListener(on_extra_val_change)
         extra_name.addCaretListener(lambda evt: on_extra_name_change())
         extra_val.addCaretListener(lambda evt: on_extra_val_change())
 
-        action_row = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        # Action row aligned to the left without vertical stretching
+        action_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        action_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
+
         check_btn = JButton("Check this role")
+        check_btn.setPreferredSize(Dimension(130, 28))  # same as Export Roles
+        check_btn.setMinimumSize(Dimension(130, 28))
+        check_btn.setMaximumSize(Dimension(130, 28))    # <-- prevents vertical growth
+        check_btn.setMargin(Insets(2, 10, 2, 10))
+
+        action_panel.add(check_btn)
 
         def run_single_role(evt=None):
             try:
@@ -895,9 +1017,9 @@ class BACCheckPanel(JPanel):
             except Exception as e:
                 JOptionPane.showMessageDialog(panel, "Error: " + str(e))
 
-        action_row.add(check_btn)
         check_btn.addActionListener(lambda e: run_single_role())
-        panel.add(action_row)
+        
+        panel.add(action_panel)
 
         return panel
     
@@ -925,33 +1047,7 @@ class BACCheckPanel(JPanel):
             if hasattr(tab_comp, "set_checkbox_state"):
                 tab_comp.set_checkbox_state(checked)
         self.save_state()
-
-    def move_selected_left(self, event):
-        idx = self.role_tabs.getSelectedIndex()
-        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
-        if idx > 0 and idx < count:
-            self.move_role_tab(idx, idx - 1)
-            self.role_tabs.setSelectedIndex(idx - 1)
-            self.update_move_buttons_state()
-
-    def move_selected_right(self, event):
-        idx = self.role_tabs.getSelectedIndex()
-        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
-        if idx >= 0 and idx < count - 1:
-            self.move_role_tab(idx, idx + 1)
-            self.role_tabs.setSelectedIndex(idx + 1)
-            self.update_move_buttons_state()
-
-    def move_role_tab(self, from_idx, to_idx):
-        count = self.role_tabs.getTabCount() - 1  # Exclude plus tab
-        if from_idx == to_idx or from_idx < 0 or to_idx < 0 or from_idx >= count or to_idx >= count:
-            return
-        # Swap role_data
-        self.role_data[from_idx], self.role_data[to_idx] = self.role_data[to_idx], self.role_data[from_idx]
-        self.save_state()
-        self.rebuild_role_tabs_from_data()
-
-
+                         
 ### ------------------- Fuzzer Tab Main ----------------------
 
 class MessageHistoryEntry(object):
@@ -964,7 +1060,7 @@ class MessageHistoryEntry(object):
 
 class FuzzerPOCTab(JPanel, IMessageEditorController):
     def __init__(self, helpers, callbacks, base_message, save_tabs_state_callback, parent_extender=None):
-        
+            
         JPanel.__init__(self)
         self.helpers = helpers
         self.callbacks = callbacks
@@ -977,43 +1073,46 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         toolbar = JToolBar()
         toolbar.setFloatable(False)
 
-        nav_button_size = Dimension(28, 24)
+        # Match role tab arrow button size
+        nav_button_size = Dimension(30, 28)
+
         self.access_check_btn = JButton("Access Check", actionPerformed=self.bac_check)
         self.send_btn = JButton("Send")
         self.attack_btn = JButton("Attack")
 
-        self.prev_btn = JButton("<")
-        self.prev_btn.setPreferredSize(nav_button_size)
-        self.prev_btn.setMaximumSize(nav_button_size)
-        self.prev_btn.setMinimumSize(nav_button_size)
-
-        self.prev_dropdown = JButton("^")
-        self.prev_dropdown.setPreferredSize(nav_button_size)
-        self.prev_dropdown.setMaximumSize(nav_button_size)
-        self.prev_dropdown.setMinimumSize(nav_button_size)
+        # Previous dropdown ▼
+        self.prev_dropdown = JButton(u"\u25BC")
         self.prev_dropdown.setFocusable(False)
-        self.prev_dropdown.setMargin(Insets(0, 0, 0, 0))
         self.prev_dropdown.addActionListener(lambda e: self.show_history_dropdown(False))
 
+        # Previous <
+        self.prev_btn = JButton("<")
+
+        # Status label
         self.status_lbl = JLabel(" 0/0 ")
         self.status_lbl.setHorizontalAlignment(JLabel.CENTER)
-        # Increased width to fit larger numbers, e.g., 100/100
         self.status_lbl.setPreferredSize(Dimension(60, 24))
         self.status_lbl.setMaximumSize(Dimension(60, 24))
         self.status_lbl.setMinimumSize(Dimension(60, 24))
 
+        # Next >
         self.next_btn = JButton(">")
-        self.next_btn.setPreferredSize(nav_button_size)
-        self.next_btn.setMaximumSize(nav_button_size)
-        self.next_btn.setMinimumSize(nav_button_size)
 
-        self.next_dropdown = JButton("^")
-        self.next_dropdown.setPreferredSize(nav_button_size)
-        self.next_dropdown.setMaximumSize(nav_button_size)
-        self.next_dropdown.setMinimumSize(nav_button_size)
+        # Next dropdown ▼
+        self.next_dropdown = JButton(u"\u25BC")
         self.next_dropdown.setFocusable(False)
-        self.next_dropdown.setMargin(Insets(0, 0, 0, 0))
         self.next_dropdown.addActionListener(lambda e: self.show_history_dropdown(True))
+
+        # Apply consistent styling to all nav buttons
+        for b in (self.prev_btn, self.next_btn, self.prev_dropdown, self.next_dropdown):
+            b.setPreferredSize(nav_button_size)
+            b.setMinimumSize(nav_button_size)
+            b.setMaximumSize(nav_button_size)
+            b.setFocusable(False)
+            b.setFont(Font("Dialog", Font.BOLD, 13))
+            b.setMargin(Insets(0, 0, 0, 0))
+            b.setHorizontalAlignment(SwingConstants.CENTER)
+            b.setVerticalAlignment(SwingConstants.CENTER)
 
         nav_panel = JPanel()
         nav_panel.setLayout(BoxLayout(nav_panel, BoxLayout.X_AXIS))
@@ -1081,8 +1180,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             req_bytes = bytearray()
         url_params, default_url_payloads, body_params, default_body_payloads = self.extract_sidepanel_lists(req_bytes)
 
-        # If a payload state was saved from a previous tab, use it directly.
-        # Otherwise, this is the first tab, so use the default payload lists.
         url_payloads_state = LAST_PAYLOAD_STATE.get("url_payloads")
         body_payloads_state = LAST_PAYLOAD_STATE.get("body_payloads")
 
@@ -1117,7 +1214,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 self.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(self.callbacks), callbacks=self.callbacks, single_check_handler=lambda idx: self.bac_check_single(idx))
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
-                # import traceback
                 traceback.print_exc()
                 self.bac_panel = JPanel()
                 self.bac_panel.add(JLabel("BACCheckPanel failed to load."))
@@ -1125,7 +1221,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.bac_scroll_panel = JScrollPane(self.bac_panel)
         self.bac_scroll_panel.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS)
 
-        # --- Custom vertical tab bar with CardLayout ---
         self.card_panel = JPanel(CardLayout())
         self.card_panel.add(self.payload_panel, "Param Probe")
         self.card_panel.add(self.bac_scroll_panel, "Role Probe")
@@ -1133,33 +1228,27 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.tab_button_panel = JPanel()
         self.tab_button_panel.setLayout(BoxLayout(self.tab_button_panel, BoxLayout.Y_AXIS))
 
-        # Store sidebar widths for consistent resizing
         self.sidebar_width_expanded = 400
-        self.sidebar_width_collapsed = 36 # Default, will be updated
+        self.sidebar_width_collapsed = 36
 
         def on_tab_click(tab_name):
-            # If clicking the active, expanded tab, collapse it.
             if self.current_tab == tab_name and not self.tab_collapsed:
                 self.card_panel.setVisible(False)
                 self.right_panel.setPreferredSize(Dimension(self.sidebar_width_collapsed, self.right_panel.getHeight()))
                 self.tab_collapsed = True
-            # Otherwise, expand the panel and show the clicked tab.
             else:
                 self.card_panel.setVisible(True)
                 self.right_panel.setPreferredSize(Dimension(self.sidebar_width_expanded, self.right_panel.getHeight()))
                 self.tab_collapsed = False
-                
                 self.current_tab = tab_name
                 layout = self.card_panel.getLayout()
                 layout.show(self.card_panel, tab_name)
 
             self.inspector_btn.set_selected(self.current_tab == "Param Probe" and not self.tab_collapsed)
             self.bac_btn.set_selected(self.current_tab == "Role Probe" and not self.tab_collapsed)
-            
-            # Re-layout the components with the new sizes
             self.right_panel.revalidate()
             self.resize_sidebar()
-                
+                    
         self.inspector_btn = StackedVerticalTabButton("Param Probe", selected=True, on_click=lambda: on_tab_click("Param Probe"))
         self.bac_btn = StackedVerticalTabButton("Role Probe", selected=False, on_click=lambda: on_tab_click("Role Probe"))
         self.tab_button_panel.removeAll()
@@ -1167,10 +1256,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.tab_button_panel.add(self.bac_btn)
         self.tab_button_panel.setMaximumSize(Dimension(40, 240))
 
-        # After adding buttons, get their actual width for the collapsed state
-        self.sidebar_width_collapsed = self.tab_button_panel.getPreferredSize().width + 5 # Padding
+        self.sidebar_width_collapsed = self.tab_button_panel.getPreferredSize().width + 5
 
-        # Set up the panels
         self.right_panel = JPanel(BorderLayout())
         self.right_panel.add(self.card_panel, BorderLayout.CENTER)
         self.right_panel.add(self.tab_button_panel, BorderLayout.EAST)
@@ -1178,11 +1265,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         main_split.setMinimumSize(Dimension(600, 400))
         self.outer_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, main_split, self.right_panel)
         self.outer_split.setOneTouchExpandable(True)
-        self.outer_split.setResizeWeight(1.0) # Pin the right component's size
+        self.outer_split.setResizeWeight(1.0)
         self.add(self.outer_split, BorderLayout.CENTER)
-
-        # The UI state will be reset when the tab is first made visible.
-        # This is handled by on_gaining_visibility().
 
         self.history = []
         self.current_idx = -1
@@ -1195,6 +1279,34 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.next_btn.addActionListener(self.go_next)
         self.update_status()
         self.parent_extender = parent_extender
+        SwingUtilities.invokeLater(lambda: self.force_layout())
+
+    def force_layout(self):
+        try:
+            # Nudge the Role Probe panel if present
+            if hasattr(self, "bac_panel") and hasattr(self.bac_panel, "refresh_layout"):
+                self.bac_panel.refresh_layout()
+
+            # Nudge our containers
+            if hasattr(self, "card_panel"):
+                self.card_panel.revalidate(); self.card_panel.repaint()
+            if hasattr(self, "right_panel"):
+                self.right_panel.revalidate(); self.right_panel.repaint()
+            if hasattr(self, "outer_split"):
+                self.outer_split.revalidate(); self.outer_split.repaint()
+
+            # One more pass on the next tick to catch late size changes
+            SwingUtilities.invokeLater(lambda: (
+                hasattr(self, "card_panel") and self.card_panel.revalidate(),
+                hasattr(self, "card_panel") and self.card_panel.repaint(),
+                hasattr(self, "right_panel") and self.right_panel.revalidate(),
+                hasattr(self, "right_panel") and self.right_panel.repaint(),
+                hasattr(self, "outer_split") and self.outer_split.revalidate(),
+                hasattr(self, "outer_split") and self.outer_split.repaint(),
+                self.resize_sidebar()
+            ))
+        except Exception:
+            pass
 
     def reset_ui_state(self):
         # Method to set the side panel to its default (collapsed) state.
@@ -1221,6 +1333,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         else:
             # For subsequent views, just ensure layout is correct
             self.resize_sidebar()
+        # After the tab becomes visible, force a clean layout so JTabbedPane wraps correctly
+        SwingUtilities.invokeLater(lambda: self.force_layout())
 
     # --- The rest of your FuzzerPOCTab methods are unchanged ---
     # on_save_state, get_bytes_as_text, exportResults, mergeResults, exportAllTabs, mergeAllTabs, etc...
@@ -2828,6 +2942,9 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         # Also, notify the newly selected tab that it's visible.
         if hasattr(selected_component, "on_gaining_visibility"):
             selected_component.on_gaining_visibility()
+        # One more repaint to settle wrapping for newly created tabs
+        if hasattr(selected_component, "force_layout"):
+            SwingUtilities.invokeLater(lambda: selected_component.force_layout())
 
     def add_plus_tab(self):
         panel = JPanel()

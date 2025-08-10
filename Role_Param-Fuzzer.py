@@ -15,11 +15,11 @@ from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorControl
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
     SwingUtilities, JFileChooser, JSplitPane, JTable, JScrollPane, JTextField, JCheckBox, DefaultCellEditor, BorderFactory, BoxLayout, Box,
-    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager
+    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout
 )
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
-    GridBagLayout, GridBagConstraints, Insets, Component
+    GridBagLayout, GridBagConstraints, Insets, Component, GridLayout
 )
 from java.awt.event import MouseAdapter, ActionListener, MouseEvent, FocusAdapter, KeyAdapter, KeyEvent, ComponentAdapter
 from java.util import ArrayList
@@ -1145,7 +1145,17 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         button_row.add(nav_panel)
 
         toolbar.add(button_row)
-        self.add(toolbar, BorderLayout.NORTH)
+        # Wrap toolbar (left) + status square (right)
+        self.status_indicator = StatusIndicator(20)  # default enabled
+
+        topbar = JPanel(BorderLayout())
+        topbar.add(toolbar, BorderLayout.WEST)
+
+        right_top = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
+        right_top.add(self.status_indicator)
+        topbar.add(right_top, BorderLayout.EAST)
+
+        self.add(topbar, BorderLayout.NORTH)
 
         self.req_editor = callbacks.createMessageEditor(self, True)
         self.resp_editor = callbacks.createMessageEditor(self, False)
@@ -1725,7 +1735,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 "req": base64.b64encode(entry.req_bytes).decode("ascii"),
                 "resp": base64.b64encode(entry.resp_bytes or b"").decode("ascii"),
                 "param_name": entry.param_name,
-                "payload": entry.payload
+                "payload": entry.payload,
+                "kind": getattr(entry, "kind", None)
             })
         # Save all current payloads
         url_payloads = [(row[0], bool(row[1])) for row in self.payload_panel.url_payloads_panel.model.rows]
@@ -1850,14 +1861,43 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         obj.current_tab = "Param Probe"
         obj.tab_collapsed = False
 
-        # Restore attack history
+        # Restore attack history (infer 'kind' for older saves)
         obj.history = []
+
+        # Collect role labels for inference (from restored BAC role tabs)
+        role_labels = set()
+        try:
+            if hasattr(obj, "bac_panel") and hasattr(obj.bac_panel, "role_data"):
+                for r in obj.bac_panel.role_data:
+                    name = r.get("label")
+                    if name:
+                        role_labels.add(name)
+        except:
+            pass
+
         for entry in data.get("entries", []):
+            param_name = entry.get("param_name")
+            payload    = entry.get("payload")
+            kind       = entry.get("kind")  # may be None in older saves
+
+            if kind is None:
+                # Heuristics for old history:
+                # - If param_name matches a role tab label -> 'role'
+                # - Else if there is a param_name or payload -> 'attack'
+                # - Else -> 'send'
+                if param_name in role_labels:
+                    kind = "role"
+                elif (param_name is not None) or (payload is not None):
+                    kind = "attack"
+                else:
+                    kind = "send"
+
             e = MessageHistoryEntry(
                 base64.b64decode(entry["req"]),
                 base64.b64decode(entry["resp"]),
-                entry.get("param_name"),
-                entry.get("payload")
+                param_name,
+                payload,
+                kind=kind
             )
             obj.history.append(e)
 
@@ -1959,6 +1999,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 
                 def do_ui_update():
                     self.show_entry(self.current_idx)
+                    # Immediately refresh the status square for this new entry
+                    try:
+                        self.update_status_indicator_from_entry(self.history[self.current_idx])
+                    except:
+                        pass
                     # Defer the resize call to run *after* any UI events from show_entry have completed.
                     self.resize_sidebar()
                 SwingUtilities.invokeLater(do_ui_update)
@@ -2200,6 +2245,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     if history:
                         self.current_idx = len(self.history) - len(history)
                         self.show_entry(self.current_idx)
+                        try:
+                            self.update_status_indicator_from_entry(self.history[self.current_idx])
+                        except:
+                            pass
                     else:
                         # Should still update status if no requests were sent
                         self.update_status()
@@ -2311,6 +2360,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     if history:
                         self.current_idx = len(self.history) - len(history)
                         self.show_entry(self.current_idx)
+                        try:
+                            self.update_status_indicator_from_entry(self.history[self.current_idx])
+                        except:
+                            pass
                     else:
                         self.update_status()
                     self.resize_sidebar()
@@ -2423,7 +2476,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 self.history.append(entry)
                 self.current_idx = len(self.history) - 1
 
-                SwingUtilities.invokeLater(lambda: (self.show_entry(self.current_idx), self.resize_sidebar()))
+                SwingUtilities.invokeLater(lambda: (
+                    self.show_entry(self.current_idx),
+                    # Immediately refresh the status square
+                    self.update_status_indicator_from_entry(self.history[self.current_idx]),
+                    self.resize_sidebar()
+                ))
                 if self.save_tabs_state_callback:
                     self.save_tabs_state_callback()
 
@@ -2540,7 +2598,32 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 ms = entry.resp_time_ms if entry.resp_time_ms is not None else 0
                 self.metrics_lbl.setText("%d bytes | %d ms" % (size, ms))
 
+        # Update status square from the selected entry
+        self.update_status_indicator_from_entry(entry)
         self.update_status()
+
+    def update_status_indicator_from_entry(self, entry):
+        try:
+            if entry is None or entry.resp_bytes is None:
+                # Unknown/empty
+                SwingUtilities.invokeLater(lambda: self.status_indicator.setStatus(None, False))
+                return
+            resp_bytes = entry.resp_bytes
+            info = self.helpers.analyzeResponse(resp_bytes)
+            code = info.getStatusCode()
+            body_off = info.getBodyOffset()
+            has_body = False
+            try:
+                raw = bytearray(resp_bytes)
+                if body_off is not None and body_off >= 0 and body_off < len(raw):
+                    # consider body present only if there is non-whitespace after the offset
+                    tail = self.helpers.bytesToString(raw[body_off:])
+                    has_body = bool(tail) and bool(tail.strip())
+            except:
+                pass
+            SwingUtilities.invokeLater(lambda: self.status_indicator.setStatus(code, has_body))
+        except:
+            SwingUtilities.invokeLater(lambda: self.status_indicator.setStatus(None, False))
         
     def show_history_dropdown(self, is_forward=True):
         popup = JPopupMenu()
@@ -2567,7 +2650,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             if getattr(entry, "kind", None) == "attack" and entry.param_name:
                 val = entry.payload if entry.payload is not None else ""
                 # keep labels short
-                if isinstance(val, basestring) if 'basestring' in globals() else isinstance(val, str):
+                if isinstance(val, str):
                     if len(val) > 80:
                         val = val[:77] + "..."
                 return u"%s = %s" % (entry.param_name, val)
@@ -2814,6 +2897,154 @@ class PlusTabComponent(JPanel):
 # ---------- Custom Vertical Button ----------
 # from javax.swing import JToggleButton
 # from java.awt import Graphics2D
+# ---------- Small clickable status square ----------
+class StatusIndicator(JPanel):
+    def __init__(self, size=20):
+        JPanel.__init__(self)
+        self.setLayout(OverlayLayout(self))  # overlay children
+        self.setPreferredSize(Dimension(size, size))
+        self.setMinimumSize(Dimension(size, size))
+        self.setMaximumSize(Dimension(size, size))
+        self.setBorder(BorderFactory.createLineBorder(Color(0,0,0)))
+        self.setToolTipText("Response status indicator (click to toggle)")
+
+        # state
+        self.enabled_flag = True
+        self.base_color = Color(192,192,192)
+        self.show_tri = False  # tri-color flag enabled?
+        self.tri_top = self.base_color
+        self.tri_mid = Color(0,0,0)
+        self.tri_bot = self.base_color
+
+        # Single-color panel (default)
+        self.single_panel = JPanel()
+        self.single_panel.setOpaque(True)
+        self.single_panel.setBackground(self.base_color)
+
+        # Tri-color panel (top/base, mid/black, bottom/base)
+        self.tri_panel = JPanel(GridLayout(3, 1, 0, 0))
+        self.tri_panel.setOpaque(True)
+        self.tri_top_panel = JPanel();  self.tri_top_panel.setOpaque(True)
+        self.tri_mid_panel = JPanel();  self.tri_mid_panel.setOpaque(True)
+        self.tri_bot_panel = JPanel();  self.tri_bot_panel.setOpaque(True)
+        self.tri_panel.add(self.tri_top_panel)
+        self.tri_panel.add(self.tri_mid_panel)
+        self.tri_panel.add(self.tri_bot_panel)
+        self.tri_panel.setVisible(False)  # hidden until needed
+
+        # Disabled overlay (shows an X)
+        self.disabled_lbl = JLabel(u"\u2715", SwingConstants.CENTER)  # ✕
+        self.disabled_lbl.setAlignmentX(0.5)
+        self.disabled_lbl.setAlignmentY(0.5)
+        self.disabled_lbl.setOpaque(False)
+        self.disabled_lbl.setFont(Font("Dialog", Font.BOLD, 12))
+        self.disabled_lbl.setForeground(Color(0,0,0))
+        self.disabled_lbl.setVisible(False)
+
+        # Add in z-order: background(s) first, overlay last
+        self.add(self.single_panel)
+        self.add(self.tri_panel)
+        self.add(self.disabled_lbl)
+
+        # Make children fill the box so they’re visible
+        maxHuge = Dimension(10000, 10000)
+        self.single_panel.setMaximumSize(maxHuge)
+        self.tri_panel.setMaximumSize(maxHuge)
+        self.tri_top_panel.setMaximumSize(maxHuge)
+        self.tri_mid_panel.setMaximumSize(maxHuge)
+        self.tri_bot_panel.setMaximumSize(maxHuge)
+        self.disabled_lbl.setMaximumSize(maxHuge)
+        self.disabled_lbl.setHorizontalAlignment(SwingConstants.CENTER)
+        self.disabled_lbl.setVerticalAlignment(SwingConstants.CENTER)
+
+        # click anywhere toggles enabled/disabled
+        class Clicker(MouseAdapter):
+            def mouseClicked(listener_self, e):
+                self.setEnabledFlag(not self.enabled_flag)
+        self.addMouseListener(Clicker())
+        self.single_panel.addMouseListener(Clicker())
+        self.tri_panel.addMouseListener(Clicker())
+        self.tri_top_panel.addMouseListener(Clicker())
+        self.tri_mid_panel.addMouseListener(Clicker())
+        self.tri_bot_panel.addMouseListener(Clicker())
+        self.disabled_lbl.addMouseListener(Clicker())
+
+    def setEnabledFlag(self, enabled):
+        self.enabled_flag = bool(enabled)
+        # when disabled, show gray single panel + X; hide tri
+        if self.enabled_flag:
+            if self.show_tri:
+                self.tri_panel.setVisible(True)
+                self.single_panel.setVisible(False)
+            else:
+                self.tri_panel.setVisible(False)
+                self.single_panel.setVisible(True)
+            self.single_panel.setBackground(self.base_color)
+            self.disabled_lbl.setVisible(False)
+        else:
+            self.tri_panel.setVisible(False)
+            self.single_panel.setVisible(True)
+            self.single_panel.setBackground(Color(180,180,180))
+            self.disabled_lbl.setVisible(True)
+        self.revalidate()
+        self.repaint()
+
+    def setStatus(self, status_code=None, has_body=False):
+        """
+        Colors:
+          1xx -> WHITE
+          2xx -> GREEN
+          3xx -> BLUE
+          4xx -> YELLOW
+          5xx -> RED
+        For 3xx/4xx/5xx + body -> show tri-color flag: base / black / base
+        """
+        try:
+            code = int(status_code) if status_code is not None else None
+        except:
+            code = None
+
+        if code is None:
+            self.base_color = Color(192,192,192)  # unknown
+            self.show_tri = False
+        else:
+            cat = code // 100
+            if   cat == 1: self.base_color = Color(255, 255, 255)   # WHITE (changed per request)
+            elif cat == 2: self.base_color = Color( 15, 157,  88)   # GREEN
+            elif cat == 3: self.base_color = Color( 66, 133, 244)   # BLUE  (changed per request)
+            elif cat == 4: self.base_color = Color(251, 188,   5)   # YELLOW
+            elif cat == 5: self.base_color = Color(219,  68,  55)   # RED
+            else:          self.base_color = Color(160,160,160)
+
+            self.show_tri = (cat in (3,4,5)) and bool(has_body)
+
+        # Apply colors to the panels
+        self.tri_top = self.base_color
+        self.tri_mid = Color(0,0,0)
+        self.tri_bot = self.base_color
+        self.tri_top_panel.setBackground(self.tri_top)
+        self.tri_mid_panel.setBackground(self.tri_mid)
+        self.tri_bot_panel.setBackground(self.tri_bot)
+
+        if self.enabled_flag:
+            # show tri if requested; else single with base color
+            if self.show_tri:
+                self.tri_panel.setVisible(True)
+                self.single_panel.setVisible(False)
+            else:
+                self.tri_panel.setVisible(False)
+                self.single_panel.setVisible(True)
+                self.single_panel.setBackground(self.base_color)
+            self.disabled_lbl.setVisible(False)
+        else:
+            # disabled view
+            self.tri_panel.setVisible(False)
+            self.single_panel.setVisible(True)
+            self.single_panel.setBackground(Color(180,180,180))
+            self.disabled_lbl.setVisible(True)
+
+        self.revalidate()
+        self.repaint()
 
 class StackedVerticalTabButton(JPanel):
     def __init__(self, text, selected=False, on_click=None):

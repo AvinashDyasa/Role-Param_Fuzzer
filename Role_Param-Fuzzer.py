@@ -1065,13 +1065,13 @@ class BACCheckPanel(JPanel):
                          
 ### ------------------- Fuzzer Tab Main ----------------------
 
-class MessageHistoryEntry(object):
-    def __init__(self, req_bytes, resp_bytes, param_name=None, payload=None):
-        self.req_bytes = req_bytes
-        self.resp_bytes = resp_bytes
-        self.param_name = param_name
-        self.payload = payload
-        self.highlight = None  # (start, end)
+# class MessageHistoryEntry(object):
+#     def __init__(self, req_bytes, resp_bytes, param_name=None, payload=None):
+#         self.req_bytes = req_bytes
+#         self.resp_bytes = resp_bytes
+#         self.param_name = param_name
+#         self.payload = payload
+#         self.highlight = None  # (start, end)
 
 class FuzzerPOCTab(JPanel, IMessageEditorController):
     def __init__(self, helpers, callbacks, base_message, save_tabs_state_callback, parent_extender=None):
@@ -1953,7 +1953,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 resp_bytes = resp.getResponse()
                 size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
 
-                entry = MessageHistoryEntry(req_bytes, resp_bytes, resp_time_ms=dt_ms, resp_size_bytes=size)
+                entry = MessageHistoryEntry(req_bytes, resp_bytes, resp_time_ms=dt_ms, resp_size_bytes=size, kind="send")
                 self.history.append(entry)
                 self.current_idx = len(self.history) - 1
                 
@@ -2060,7 +2060,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                         mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
                         entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
-                                                    resp_time_ms=dt_ms, resp_size_bytes=size)
+                                                    resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                         entry.highlight = mark
                         history.append(entry)
 
@@ -2153,7 +2153,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                                 mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
                                 entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
-                                                            resp_time_ms=dt_ms, resp_size_bytes=size)
+                                                            resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                                 entry.highlight = mark
                                 history.append(entry)
 
@@ -2186,7 +2186,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                         size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
 
                                         entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=key_path, payload=payload,
-                                                                    resp_time_ms=dt_ms, resp_size_bytes=size)
+                                                                    resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
+
                                         history.append(entry)
                                     except (KeyError, IndexError, TypeError):
                                         pass
@@ -2299,7 +2300,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         param_name=role['label'],
                         payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])]),
                         resp_time_ms=dt_ms,
-                        resp_size_bytes=size
+                        resp_size_bytes=size,
+                        kind="role"
                     )
                     history.append(entry)
 
@@ -2414,7 +2416,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     param_name=role.get('label', 'Role'),
                     payload="; ".join(["%s=%s" % (h.get('header', ''), h.get('value', '')) for h in role.get('headers', [])]),
                     resp_time_ms=dt_ms,
-                    resp_size_bytes=size
+                    resp_size_bytes=size,
+                    kind="role"
                 )
 
                 self.history.append(entry)
@@ -2558,12 +2561,29 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         popup.show(btn, 0, btn.getHeight())
 
     def summarize_entry(self, entry):
+        # Prefer human-friendly labels based on what kind of action it was
         try:
+            # ATTACK: show "param = value"
+            if getattr(entry, "kind", None) == "attack" and entry.param_name:
+                val = entry.payload if entry.payload is not None else ""
+                # keep labels short
+                if isinstance(val, basestring) if 'basestring' in globals() else isinstance(val, str):
+                    if len(val) > 80:
+                        val = val[:77] + "..."
+                return u"%s = %s" % (entry.param_name, val)
+
+            # ROLE/BAC: show "Role: <role tab name>"
+            if getattr(entry, "kind", None) == "role":
+                label = entry.param_name or "Role"
+                return u"Role: %s" % label
+
+            # SEND (or unknown): show API URL like Repeater
             analyzed = self.helpers.analyzeRequest(self.getHttpService(), entry.req_bytes)
             url = analyzed.getUrl().toString()
             return url
         except:
             return "(invalid)"
+
 
     def jump_to_history(self, idx):
         self.current_idx = idx
@@ -2874,7 +2894,7 @@ def update_last_payload_state(url_payloads_state, body_payloads_state):
     LAST_PAYLOAD_STATE["body_payloads"] = list(body_payloads_state)
 
 class MessageHistoryEntry(object):
-    def __init__(self, req_bytes, resp_bytes, param_name=None, payload=None, resp_time_ms=None, resp_size_bytes=None):
+    def __init__(self, req_bytes, resp_bytes, param_name=None, payload=None, resp_time_ms=None, resp_size_bytes=None, kind=None):
         self.req_bytes = req_bytes
         self.resp_bytes = resp_bytes
         self.param_name = param_name
@@ -2882,6 +2902,7 @@ class MessageHistoryEntry(object):
         self.highlight = None  # (start, end)
         self.resp_time_ms = resp_time_ms
         self.resp_size_bytes = resp_size_bytes
+        self.kind = kind  # "send", "attack", or "role"
 # ---------- Main BurpExtender ----------
 class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
     def registerExtenderCallbacks(self, callbacks):

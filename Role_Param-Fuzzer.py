@@ -692,7 +692,8 @@ class BACCheckPanel(JPanel):
             "headers": [{"header": "", "value": ""}],
             "extra_enabled": False,
             "extra_name": "",
-            "extra_value": ""
+            "extra_value": "",
+            "force": False
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         # Insert at plus_idx (which is at end, since only "+" at this point on init)
@@ -714,7 +715,8 @@ class BACCheckPanel(JPanel):
             "headers": [{"header": "", "value": ""}],
             "extra_enabled": False,
             "extra_name": "",
-            "extra_value": ""
+            "extra_value": "",
+            "force": False
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         self.role_tabs.insertTab(role_label, None, panel, None, plus_idx)
@@ -995,6 +997,19 @@ class BACCheckPanel(JPanel):
         extra_name.addCaretListener(lambda evt: on_extra_name_change())
         extra_val.addCaretListener(lambda evt: on_extra_val_change())
 
+        # --- Force toggle row (per-role) ---
+        force_row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        force_chk = JCheckBox("Force (add missing headers)")
+        force_chk.setSelected(role_cfg.get("force", False))
+        force_row.add(force_chk)
+        panel.add(force_row)
+
+        def on_force_toggle(evt=None):
+            role_cfg["force"] = force_chk.isSelected()
+            if self.on_save_callback:
+                self.on_save_callback(self.host)
+
+        force_chk.addActionListener(lambda evt: on_force_toggle())
         # Action row aligned to the left without vertical stretching
         action_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
         action_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0))
@@ -1734,7 +1749,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     "headers": list(role.get("headers", [])),
                     "extra_enabled": role.get("extra_enabled", False),
                     "extra_name": role.get("extra_name", ""),
-                    "extra_value": role.get("extra_value", "")
+                    "extra_value": role.get("extra_value", ""),
+                    "force": role.get("force", False)
                 })
         # Save the tab name (if available)
         tab_name = None
@@ -2249,10 +2265,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         else:
                             unchanged_headers.append(h)
 
-                    # Add any new headers from role not originally present
-                    for hname_lc, hval in role_headers.items():
-                        if hname_lc not in used_headers:
-                            changed_headers.append("%s: %s" % (hname_lc, hval))
+                    # Add any new headers from role not originally present (only if Force is enabled)
+                    if role.get("force", False):
+                        for hname_lc, hval in role_headers.items():
+                            if hname_lc not in used_headers:
+                                changed_headers.append("%s: %s" % (hname_lc, hval))
 
                     # Add extra header after changed ones
                     if role.get('extra_enabled') and role.get('extra_name'):
@@ -2363,10 +2380,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     else:
                         unchanged_headers.append(h)
 
-                # Add headers present only in role
-                for hn_lc, hval in role_headers.items():
-                    if hn_lc not in used:
-                        changed_headers.append("%s: %s" % (hn_lc, hval))
+                # Add headers present only in role (only if Force is enabled)
+                if role.get("force", False):
+                    for hn_lc, hval in role_headers.items():
+                        if hn_lc not in used:
+                            changed_headers.append("%s: %s" % (hn_lc, hval))
 
                 # Extra header support
                 if role.get('extra_enabled') and role.get('extra_name'):

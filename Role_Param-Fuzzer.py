@@ -15,7 +15,7 @@ from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorControl
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
     SwingUtilities, JFileChooser, JSplitPane, JTable, JScrollPane, JTextField, JCheckBox, DefaultCellEditor, BorderFactory, BoxLayout, Box,
-    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout
+    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar
 )
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
@@ -1152,6 +1152,17 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         topbar.add(toolbar, BorderLayout.WEST)
 
         right_top = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
+        # --- Progress UI + run guard ---
+        self._run_in_flight = False
+        self._progress_total = 0
+        self._progress_done = 0
+
+        self.progress = JProgressBar()
+        self.progress.setVisible(False)
+        self.progress.setStringPainted(True)   # show "x / y"
+        self.progress.setIndeterminate(False)
+
+        right_top.add(self.progress)
         right_top.add(self.status_indicator)
         topbar.add(right_top, BorderLayout.EAST)
 
@@ -1363,6 +1374,58 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
     # --- The rest of your FuzzerPOCTab methods are unchanged ---
     # on_save_state, get_bytes_as_text, exportResults, mergeResults, exportAllTabs, mergeAllTabs, etc...
+
+    def _begin_run(self, total_steps, label="Working…"):
+        if self._run_in_flight:
+            return False
+        self._run_in_flight = True
+        self._progress_total = max(1, int(total_steps))
+        self._progress_done = 0
+        def ui():
+            # lock buttons
+            self.attack_btn.setEnabled(False)
+            self.access_check_btn.setEnabled(False)
+            self.send_btn.setEnabled(False)
+            # prime progress bar
+            self.progress.setMinimum(0)
+            self.progress.setMaximum(self._progress_total)
+            self.progress.setValue(0)
+            self.progress.setString("%s 0 / %d" % (label, self._progress_total))
+            self.progress.setIndeterminate(False)  # set True if you prefer pulsing
+            self.progress.setVisible(True)
+            # wait cursor (nice to have)
+            try:
+                self.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR))
+            except:
+                pass
+        SwingUtilities.invokeLater(ui)
+        return True
+
+    def _tick(self):
+        if not self._run_in_flight:
+            return
+        self._progress_done += 1
+        done = min(self._progress_done, self._progress_total)
+        def ui():
+            self.progress.setValue(done)
+            self.progress.setString("%d / %d" % (done, self._progress_total))
+        SwingUtilities.invokeLater(ui)
+
+    def _end_run(self):
+        if not self._run_in_flight:
+            return
+        self._run_in_flight = False
+        def ui():
+            self.progress.setVisible(False)
+            self.attack_btn.setEnabled(True)
+            self.access_check_btn.setEnabled(True)
+            self.send_btn.setEnabled(True)
+            try:
+                self.setCursor(Cursor.getDefaultCursor())
+            except:
+                pass
+        SwingUtilities.invokeLater(ui)
+
 
     def on_save_state(self, event):
         if self.save_tabs_state_callback:
@@ -2019,6 +2082,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         threading.Thread(target=worker).start()
 
     def attack(self, event):
+        if self._run_in_flight:
+            return
         def worker():
             try:
                 req_bytes = self.req_editor.getMessage()
@@ -2079,6 +2144,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 # Use JSON handling if either content-type says JSON OR body is valid JSON
                 is_json = (("application/json" in content_type) or 
                         (is_json_body and body_str.strip().startswith(("{", "["))))
+                # --- Progress start ---
+                total = len(url_params) * len(url_payloads)
+                total += len(body_params) * len(body_payloads)  # body fuzzing count
+                if not self._begin_run(total, label="Attack"):
+                    return
 
                 # --- Attack URL params (type 0) ---
                 for pname in url_params:
@@ -2108,6 +2178,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                                     resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                         entry.highlight = mark
                         history.append(entry)
+                        self._tick()
 
                 # --- Attack body/form params (type 1) ---
                 # Only skip body param attacks if it's JSON (we handle JSON separately)
@@ -2201,6 +2272,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                                             resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                                 entry.highlight = mark
                                 history.append(entry)
+                                self._tick()
 
                 # --- Attack JSON body keys if body is JSON ---
                 if is_json:
@@ -2234,6 +2306,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                                                     resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
 
                                         history.append(entry)
+                                        self._tick()
                                     except (KeyError, IndexError, TypeError):
                                         pass
                     except Exception:
@@ -2259,11 +2332,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 if self.save_tabs_state_callback:
                     self.save_tabs_state_callback()
             except Exception as e:
-                # import traceback
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Attack Error:\n" + str(e) + "\n" + traceback.format_exc()))
+            finally:
+                self._end_run()
         threading.Thread(target=worker).start()
         
     def bac_check(self, event):
+        if self._run_in_flight:
+            return
         def worker():
             try:
                 req_bytes = self.req_editor.getMessage()
@@ -2284,6 +2360,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 header_lines, body = (req_str.split('\r\n\r\n', 1) + [""])[:2]
                 base_headers = header_lines.split('\r\n')
                 history = []
+                # Count how many roles are enabled (and not the '+' tab)
+                enabled_roles = 0
+                for idx, role in enumerate(list(self.bac_panel.role_data)):
+                    if idx < self.bac_panel.role_tabs.getTabCount() - 1 and role.get("enabled", True):
+                        enabled_roles += 1
+
+                if not self._begin_run(enabled_roles, label="Access Check"):
+                    return
 
                 for idx, role in enumerate(list(self.bac_panel.role_data)):
                     if idx >= self.bac_panel.role_tabs.getTabCount() - 1 or not role.get("enabled", True):
@@ -2353,6 +2437,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         kind="role"
                     )
                     history.append(entry)
+                    self._tick()
 
                 self.history += history
 
@@ -2375,6 +2460,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
             except Exception as e:
                 SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Role Probe Error:\n" + str(e) + "\n" + traceback.format_exc()))
+            finally:
+                self._end_run()
         threading.Thread(target=worker).start()
 
     def bac_check_single(self, role_idx):

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # search for # Default payloads to change default payloads
-#adding comment
 import threading
 import binascii
 import json

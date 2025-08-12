@@ -1284,6 +1284,20 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         nav_panel.add(self.status_lbl)
         nav_panel.add(self.next_btn)
         nav_panel.add(self.next_dropdown)
+        # --- URL-bar-like, copyable history title box ---
+        self.history_title = JTextField(40)  # width; adjust as you like
+        self.history_title.setEditable(False)       # user can't edit
+        self.history_title.setDragEnabled(True)     # easy mouse drag copy
+        self.history_title.setToolTipText("Current history item (click + drag to copy)")
+        # keep it enabled for proper copy/select visuals
+        self.history_title.setEnabled(True)
+        # look like a normal text field (URL bar vibe)
+        try:
+            self.history_title.setBorder(UIManager.getBorder("TextField.border"))
+        except:
+            pass
+        self.history_title.setMaximumSize(Dimension(600, 26))
+        self.history_title.setMinimumSize(Dimension(260, 26))
 
         button_row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
         button_row.add(self.access_check_btn)
@@ -1291,6 +1305,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         button_row.add(self.attack_btn)
         button_row.add(Box.createHorizontalStrut(15))  # spacer
         button_row.add(nav_panel)
+        button_row.add(Box.createHorizontalStrut(8))
+        button_row.add(self.history_title)
 
         toolbar.add(button_row)
         # Wrap toolbar (left) + status square (right)
@@ -1472,6 +1488,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.current_idx = -1
         self.req_editor.setMessage(req_bytes, True)
         self.resp_editor.setMessage(bytearray(), False)
+        self.update_history_title(None)
 
         self.send_btn.addActionListener(self.send_request)
         self.attack_btn.addActionListener(self.attack)
@@ -2831,6 +2848,17 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.inspector_tabs.setComponentAt(0, new_payload_panel)
         self.payload_panel = new_payload_panel
 
+    def update_history_title(self, entry=None):
+        try:
+            text = self.summarize_entry(entry) if entry else ""
+        except:
+            text = ""
+        self.history_title.setText(text)
+        # optional: place caret at start so long labels reveal beginning like a URL bar
+        try:
+            self.history_title.setCaretPosition(0)
+        except:
+            pass
 
     def go_prev(self, event):
         if self.history and self.current_idx > 0:
@@ -2867,7 +2895,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         # Update status square from the selected entry
         self.update_status_indicator_from_entry(entry)
+        # Update the URL-bar-like title
+        self.update_history_title(self.history[idx] if 0 <= idx < len(self.history) else None)
         self.update_status()
+        
 
     def update_status_indicator_from_entry(self, entry):
         try:

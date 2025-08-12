@@ -1730,6 +1730,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         f.write(u"Value: %s\n\n"   % p_val)
                         f.write(u"Request:\n%s\n\n"  % r)
                         f.write(u"Response:\n%s\n"   % s)
+
+                        # ADD metrics line
+                        size = entry.resp_size_bytes if entry.resp_size_bytes is not None else (len(s) if s else 0)
+                        ms = entry.resp_time_ms if entry.resp_time_ms is not None else 0
+                        f.write(u"Metrics: %d bytes | %d ms\n" % (size, ms))
+
                         f.write(u"-------------------\n\n")
 
             JOptionPane.showMessageDialog(self, "Exported %d tab(s) to:\n%s" % (len(selected_tabs), out_path))
@@ -1822,6 +1828,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         f.write(u"Value: %s\n\n"   % p_val)
                         f.write(u"Request:\n%s\n\n"  % r)
                         f.write(u"Response:\n%s\n"   % s)
+
+                        # ADD metrics line
+                        size = entry.resp_size_bytes if entry.resp_size_bytes is not None else (len(s) if s else 0)
+                        ms = entry.resp_time_ms if entry.resp_time_ms is not None else 0
+                        f.write(u"Metrics: %d bytes | %d ms\n" % (size, ms))
+
                         f.write(u"-------------------\n\n")
             JOptionPane.showMessageDialog(self, "Merged %d tab(s) into:\n%s" % (len(selected_tabs), out_path))
         except Exception as e:
@@ -1963,7 +1975,9 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 "resp": base64.b64encode(entry.resp_bytes or b"").decode("ascii"),
                 "param_name": entry.param_name,
                 "payload": entry.payload,
-                "kind": getattr(entry, "kind", None)
+                "kind": getattr(entry, "kind", None),
+                "resp_time_ms": entry.resp_time_ms,
+                "resp_size_bytes": entry.resp_size_bytes,
             })
         # Save all current payloads
         url_payloads = [(row[0], bool(row[1])) for row in self.payload_panel.url_payloads_panel.model.rows]
@@ -2124,6 +2138,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 base64.b64decode(entry["resp"]),
                 param_name,
                 payload,
+                resp_time_ms=entry.get("resp_time_ms"),
+                resp_size_bytes=entry.get("resp_size_bytes"),
                 kind=kind
             )
             obj.history.append(e)

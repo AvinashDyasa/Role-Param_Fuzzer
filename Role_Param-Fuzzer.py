@@ -1341,7 +1341,13 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         bottom_panel.add(left_panel, BorderLayout.WEST)
 
         btn_panel = JPanel(FlowLayout(FlowLayout.RIGHT))
-        self.screenshot_btn = JButton("Take Screenshot", actionPerformed=self.takeScreenshot)
+        self.screenshot_btn = JButton(u"\U0001F4F7", actionPerformed=self.takeScreenshot)  # 📷
+        self.screenshot_btn.setToolTipText("Take screenshot")
+        self.screenshot_btn.setMargin(Insets(0, 0, 0, 0))
+        self.screenshot_btn.setFont(self.screenshot_btn.getFont().deriveFont(20.0))  # bump icon size
+        self.screenshot_btn.setPreferredSize(Dimension(30, 30))
+        self.screenshot_btn.setMinimumSize(Dimension(30, 30))
+        self.screenshot_btn.setMaximumSize(Dimension(30, 30))
         self.export_tabs_btn = JButton("Export Tabs", actionPerformed=self.exportTabsForImport)
         self.merge_export_tabs_btn = JButton("Merge Export", actionPerformed=(lambda e: self.parent_extender.mergeExportTabsForImport(e)))
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)

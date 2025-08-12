@@ -15,7 +15,7 @@ from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorControl
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
     SwingUtilities, JFileChooser, JSplitPane, JTable, JScrollPane, JTextField, JCheckBox, DefaultCellEditor, BorderFactory, BoxLayout, Box,
-    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar
+    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar, JEditorPane
 )
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
@@ -461,6 +461,14 @@ class BACCheckPanel(JPanel):
         left_strip.add(self.export_bac_btn)
         left_strip.add(Box.createHorizontalStrut(6))
         left_strip.add(self.import_bac_btn)
+        # Delete Roles button
+        self.delete_bac_btn = JButton("Delete Roles", actionPerformed=self.delete_bac_roles)
+        self.delete_bac_btn.setPreferredSize(Dimension(130, 28))
+        self.delete_bac_btn.setMinimumSize(Dimension(120, 28))
+        self.delete_bac_btn.setMargin(Insets(2, 10, 2, 10))
+
+        left_strip.add(Box.createHorizontalStrut(6))
+        left_strip.add(self.delete_bac_btn)
 
         top_panel.add(left_strip, BorderLayout.WEST)
         self.add(top_panel, BorderLayout.NORTH)
@@ -682,6 +690,118 @@ class BACCheckPanel(JPanel):
                 JOptionPane.showMessageDialog(self, "Imported %d BAC roles." % len(selected_indices))
         except Exception as e:
             JOptionPane.showMessageDialog(self, "Error importing BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
+
+    def delete_bac_roles(self, event):
+        try:
+            if not self.role_data:
+                JOptionPane.showMessageDialog(self, "No roles to delete.")
+                return
+
+            # Build a confirmation panel with ALL roles (enabled pre-checked, disabled shown unticked)
+            container = JPanel()
+            container.setLayout(BoxLayout(container, BoxLayout.Y_AXIS))
+            container.setAlignmentX(JPanel.LEFT_ALIGNMENT)
+
+            # Proper HTML message
+            msg = JEditorPane("text/html",
+                            "<html><b>Reminder:</b> Consider exporting roles before deleting."
+                            "<br>Select the roles you want to delete, then click <b>OK</b>.</html>")
+            msg.setEditable(False)
+            msg.setOpaque(False)
+            msg.setAlignmentX(JEditorPane.LEFT_ALIGNMENT)
+            container.add(msg)
+            container.add(Box.createVerticalStrut(6))
+
+            # Select All checkbox reflects initial state (all enabled?)
+            all_enabled_initial = all(r.get("enabled", True) for r in self.role_data)
+            select_all = JCheckBox(" Select All", all_enabled_initial)
+            select_all.setAlignmentX(JCheckBox.LEFT_ALIGNMENT)
+            select_all.setHorizontalAlignment(SwingConstants.LEFT)  # ensure left text alignment
+            container.add(select_all)
+
+            # Create one checkbox per role (pre-select enabled, show disabled unticked)
+            checks = []
+            idx_map = []  # map from checkbox index -> real role index
+            count_real_tabs = len(self.role_data)
+            for i in range(count_real_tabs):
+                # Prefer the tab title; fallback to stored label
+                try:
+                    name = self.role_tabs.getTitleAt(i)
+                except:
+                    name = None
+                if not name:
+                    name = self.role_data[i].get("label", "Role #%d" % (i + 1))
+
+                preselect = bool(self.role_data[i].get("enabled", True))
+                cb = JCheckBox(" " + name, preselect)
+                cb.setAlignmentX(JCheckBox.LEFT_ALIGNMENT)
+                cb.setHorizontalAlignment(SwingConstants.LEFT)  # ensure left text alignment
+                checks.append(cb)
+                idx_map.append(i)
+                container.add(cb)
+
+            def toggle_all(evt=None):
+                state = select_all.isSelected()
+                for cb in checks:
+                    cb.setSelected(state)
+            select_all.addActionListener(toggle_all)
+
+            # Wrap in a WEST-anchored panel so content hugs the left inside the dialog/scrollpane
+            outer = JPanel(BorderLayout())
+            outer.add(container, BorderLayout.WEST)
+
+            scroll = JScrollPane(outer)
+            scroll.setPreferredSize(Dimension(380, min((len(checks) + 3) * 30, 380)))
+
+            res = JOptionPane.showConfirmDialog(self, scroll, "Delete Roles", JOptionPane.OK_CANCEL_OPTION)
+            if res != JOptionPane.OK_OPTION:
+                return
+
+            # Roles actually selected for deletion
+            to_delete_real_indices = [idx_map[j] for j, cb in enumerate(checks) if cb.isSelected()]
+            if not to_delete_real_indices:
+                JOptionPane.showMessageDialog(self, "No roles selected for deletion.")
+                return
+
+            # Final confirmation with proper HTML list
+            names = []
+            for i in to_delete_real_indices:
+                try:
+                    nm = self.role_tabs.getTitleAt(i)
+                except:
+                    nm = None
+                if not nm:
+                    nm = self.role_data[i].get("label", "Role #%d" % (i + 1))
+                names.append(nm)
+
+            confirm_html = "<html>You are about to delete <b>%d</b> role(s):<br><br>%s<br><br>This cannot be undone. Continue?</html>" % (
+                len(to_delete_real_indices),
+                "<br>".join("&nbsp;&nbsp;&bull; " + n for n in names)
+            )
+            confirm = JEditorPane("text/html", confirm_html)
+            confirm.setEditable(False)
+            confirm.setOpaque(False)
+
+            res2 = JOptionPane.showConfirmDialog(self, confirm, "Confirm Deletion", JOptionPane.OK_CANCEL_OPTION)
+            if res2 != JOptionPane.OK_OPTION:
+                return
+
+            # Delete from role_data (delete highest index first to avoid shifting)
+            for i in sorted(to_delete_real_indices, reverse=True):
+                if 0 <= i < len(self.role_data):
+                    del self.role_data[i]
+
+            # Persist + rebuild UI
+            self.save_state()
+            self.rebuild_role_tabs_from_data()
+            self.ensure_single_plus_tab()
+            self.update_move_buttons_state()
+
+            JOptionPane.showMessageDialog(self, "Deleted %d role(s)." % len(to_delete_real_indices))
+
+        except Exception as e:
+            JOptionPane.showMessageDialog(self, "Error deleting roles:\n" + str(e) + "\n" + traceback.format_exc())
+
 
     def _add_role_tab_internal(self, label=None, config=None):
         # Used for initial load - appends at end before "+" tab

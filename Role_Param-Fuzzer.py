@@ -450,22 +450,44 @@ class BACCheckPanel(JPanel):
         left_strip.add(self.enable_all_checkbox)
 
         # Bigger Export / Import buttons
-        self.export_bac_btn = JButton("Export Roles", actionPerformed=self.export_bac_roles)
-        self.import_bac_btn = JButton("Import Roles", actionPerformed=self.import_bac_roles)
+        self.export_bac_btn = JButton(u"\u21EA", actionPerformed=self.export_bac_roles)  # ⇪
+        self.export_bac_btn.setToolTipText("Export roles")
+        self.export_bac_btn.setMargin(Insets(0, 0, 0, 0))
+        # bigger glyph without changing the family (safer across LAFs)
+        self.export_bac_btn.setFont(self.export_bac_btn.getFont().deriveFont(20.0))
+        # if glyph is missing, try: self.export_bac_btn.setFont(Font("Segoe UI Symbol", Font.PLAIN, 20))
+        self.export_bac_btn.setPreferredSize(Dimension(30, 30))
+        self.export_bac_btn.setMinimumSize(Dimension(30, 30))
+        self.export_bac_btn.setMaximumSize(Dimension(30, 30))
+
+        self.import_bac_btn = JButton(u"\u2B73", actionPerformed=self.import_bac_roles)  # ⭳
+        self.import_bac_btn.setToolTipText("Import roles")
+        self.import_bac_btn.setMargin(Insets(0, 0, 0, 0))
+        self.import_bac_btn.setFont(self.import_bac_btn.getFont().deriveFont(20.0))
+        # if glyph is missing, try: self.import_bac_btn.setFont(Font("Segoe UI Symbol", Font.PLAIN, 20))
+        self.import_bac_btn.setPreferredSize(Dimension(30, 30))
+        self.import_bac_btn.setMinimumSize(Dimension(30, 30))
+        self.import_bac_btn.setMaximumSize(Dimension(30, 30))
+
         for b in (self.export_bac_btn, self.import_bac_btn):
-            b.setPreferredSize(Dimension(130, 28))
-            b.setMinimumSize(Dimension(120, 28))
-            b.setMargin(Insets(2, 10, 2, 10))
+            b.setMargin(Insets(0, 0, 0, 0))
+            b.setPreferredSize(Dimension(30, 30))
+            b.setMinimumSize(Dimension(30, 30))
+            b.setMaximumSize(Dimension(30, 30))
+            b.setHorizontalAlignment(SwingConstants.CENTER)
+            b.setVerticalAlignment(SwingConstants.CENTER)
 
         left_strip.add(Box.createHorizontalStrut(10))
         left_strip.add(self.export_bac_btn)
         left_strip.add(Box.createHorizontalStrut(6))
         left_strip.add(self.import_bac_btn)
-        # Delete Roles button
-        self.delete_bac_btn = JButton("Delete Roles", actionPerformed=self.delete_bac_roles)
-        self.delete_bac_btn.setPreferredSize(Dimension(130, 28))
-        self.delete_bac_btn.setMinimumSize(Dimension(120, 28))
-        self.delete_bac_btn.setMargin(Insets(2, 10, 2, 10))
+        # Delete Roles button (Unicode trash, text-style)
+        self.delete_bac_btn = JButton(u"\u232B", actionPerformed=self.delete_bac_roles)  # ⌫
+        self.delete_bac_btn.setToolTipText("Delete roles")
+        self.delete_bac_btn.setMargin(Insets(0, 0, 0, 0))
+        self.delete_bac_btn.setPreferredSize(Dimension(30, 30))
+        self.delete_bac_btn.setMinimumSize(Dimension(30, 30))
+
 
         left_strip.add(Box.createHorizontalStrut(6))
         left_strip.add(self.delete_bac_btn)
@@ -909,11 +931,15 @@ class BACCheckPanel(JPanel):
 
             gbc.gridx = 2
             gbc.weightx = 0.0
-            del_btn = JButton("Delete")
-            del_btn.setFont(default_font)
-            del_btn.setPreferredSize(Dimension(80, 24))
-            del_btn.setMinimumSize(Dimension(80, 24))
+            gbc.fill = GridBagConstraints.NONE
+            del_btn = JButton(u"\u232B")  # ⌫
+            del_btn.setToolTipText("Delete this header")
+            del_btn.setMargin(Insets(0, 0, 0, 0))
+            del_btn.setPreferredSize(Dimension(26, 26))
+            del_btn.setMinimumSize(Dimension(26, 26))
+            del_btn.setMaximumSize(Dimension(26, 26))
             row.add(del_btn, gbc)
+
 
             # Value input - row 1
             gbc.gridx = 0
@@ -941,11 +967,13 @@ class BACCheckPanel(JPanel):
 
             gbc.gridx = 2
             gbc.weightx = 0.0
-            gbc.fill = GridBagConstraints.HORIZONTAL
-            edit_btn = JButton("Edit")
-            edit_btn.setFont(default_font)
-            edit_btn.setPreferredSize(Dimension(80, 24))
-            edit_btn.setMinimumSize(Dimension(80, 24))
+            gbc.fill = GridBagConstraints.NONE
+            edit_btn = JButton(u"\u270E")  # ✎
+            edit_btn.setToolTipText("Edit header value")
+            edit_btn.setMargin(Insets(0, 0, 0, 0))
+            edit_btn.setPreferredSize(Dimension(26, 26))
+            edit_btn.setMinimumSize(Dimension(26, 26))
+            edit_btn.setMaximumSize(Dimension(26, 26))
             row.add(edit_btn, gbc)
 
             def open_editor_popup(evt=None):
@@ -1292,7 +1320,17 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.resp_editor = callbacks.createMessageEditor(self, False)
 
         # --- Bottom Panel (Save, Export, Screenshot) ---
-        self.save_btn = JButton("Save State", actionPerformed=self.on_save_state)
+        # Icon-only Save button (uses built-in Swing floppy icon)
+        self.save_btn = JButton("", actionPerformed=self.on_save_state)
+        icon = UIManager.getIcon("FileView.floppyDriveIcon")  # built-in LAF icon
+        if icon is not None:
+            self.save_btn.setIcon(icon)
+            self.save_btn.setToolTipText("Save state")
+            self.save_btn.setPreferredSize(Dimension(30, 30))
+        else:
+            # Fallback if the LAF doesn't provide the icon
+            self.save_btn.setText("Save State")
+        
         self.export_all_btn = JButton("Export Results", actionPerformed=self.exportAllTabs)
         self.merge_all_btn = JButton("Merge Results", actionPerformed=self.mergeAllTabs)
         left_panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))

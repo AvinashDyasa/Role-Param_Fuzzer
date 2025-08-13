@@ -2227,7 +2227,37 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 })
         # Save the tab name (if available)
         tab_name = None
-        # (We'll set this when recreating the tab.)
+        # (We'll set this when recreating the tab.) 
+        bac_roles = []
+        bac_roles_archived = []
+        try:
+            if hasattr(self, "bac_panel"):
+                # active roles
+                if hasattr(self.bac_panel, "role_data") and self.bac_panel.role_data:
+                    for role in self.bac_panel.role_data:
+                        bac_roles.append({
+                            "label": role.get("label", ""),
+                            "headers": list(role.get("headers", [])),
+                            "extra_enabled": role.get("extra_enabled", False),
+                            "extra_name": role.get("extra_name", ""),
+                            "extra_value": role.get("extra_value", ""),
+                            "force": role.get("force", False)
+                        })
+                # archived roles
+                if hasattr(self.bac_panel, "archived_role_data") and self.bac_panel.archived_role_data:
+                    for role in self.bac_panel.archived_role_data:
+                        bac_roles_archived.append({
+                            "label": role.get("label", ""),
+                            "headers": list(role.get("headers", [])),
+                            "extra_enabled": role.get("extra_enabled", False),
+                            "extra_name": role.get("extra_name", ""),
+                            "extra_value": role.get("extra_value", ""),
+                            "force": role.get("force", False)
+                        })
+        except Exception:
+            # Don't break serialization if panel isn't fully built yet
+            pass
+        # ----- END: Save BAC roles (active + archived) -----
         return {
             "req": base64.b64encode(req_bytes).decode("ascii"),
             "entries": entries,
@@ -2235,7 +2265,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             "body_payloads": body_payloads,
             "service": service_data,
             "tab_name": tab_name,
-            "bac_roles": bac_roles
+            "bac_roles": bac_roles,
+            "bac_roles_archived": bac_roles_archived,
         }
 
     @staticmethod
@@ -2257,7 +2288,9 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             service = helpers.buildHttpService(s["host"], int(s["port"]), s["protocol"])
 
         base_message = DummyBaseMessage(req_bytes, service)
-        obj = FuzzerPOCTab(helpers, callbacks, base_message=base_message, save_tabs_state_callback=save_tabs_state_callback, parent_extender=parent_extender)
+        obj = FuzzerPOCTab(helpers, callbacks, base_message=base_message,
+                        save_tabs_state_callback=save_tabs_state_callback,
+                        parent_extender=parent_extender)
 
         # Restore base request into editor
         obj.req_editor.setMessage(req_bytes, True)
@@ -2275,10 +2308,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         # Restore BAC tab (headers from request)
         restored_service = service if service else obj.guess_service_from_request(req_bytes)
-        if restored_service:
-            host = restored_service.getHost()
-        else:
-            host = "default"
+        host = restored_service.getHost() if restored_service else "default"
+
         headers = []
         req_str = helpers.bytesToString(req_bytes)
         for line in req_str.split('\r\n'):
@@ -2286,28 +2317,86 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 hname = line.split(':', 1)[0].strip()
                 if hname and hname.lower() not in ("get", "post", "put", "delete", "patch"):
                     headers.append(hname)
+
         if not headers:
             obj.bac_panel = JPanel()
             obj.bac_panel.add(JLabel("NO HEADERS FOUND. Load or send a real request."))
         else:
             try:
-                obj.bac_panel = BACCheckPanel(host, headers, on_save_callback=lambda host: save_bac_configs(callbacks), callbacks=callbacks, single_check_handler=lambda idx: obj.bac_check_single(idx))
-                # Restore BAC roles if present
-                if "bac_roles" in data and hasattr(obj.bac_panel, "role_data"):
-                    obj.bac_panel.role_data = []
+                obj.bac_panel = BACCheckPanel(
+                    host, headers,
+                    on_save_callback=lambda host: save_bac_configs(callbacks),
+                    callbacks=callbacks,
+                    single_check_handler=lambda idx: obj.bac_check_single(idx)
+                )
+
+                # ---------- ARCHIVE-SAFE RESTORE ----------
+                # Authoritative active roles from snapshot
+                active_from_snapshot = data.get("bac_roles", [])
+                archived_from_snapshot = data.get("bac_roles_archived", None)
+
+                # Clean current active UI area
+                try:
                     obj.bac_panel.role_tabs.removeAll()
-                    for role_cfg in data["bac_roles"]:
-                        if not isinstance(role_cfg, dict):
-                            print("[-] Skipping invalid BAC role (not a dict):", role_cfg)
-                            continue
-                        obj.bac_panel._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
-                    obj.bac_panel.save_state()
-                # Always ensure plus tab is present after restore
+                except Exception:
+                    pass
+                if hasattr(obj.bac_panel, "role_data"):
+                    obj.bac_panel.role_data = []
+
+                # Ensure archived store exists
+                if not hasattr(obj.bac_panel, "archived_role_data") or obj.bac_panel.archived_role_data is None:
+                    obj.bac_panel.archived_role_data = []
+
+                # Signature helper (label + headers set)
+                import json
+                def _sig(role_cfg):
+                    try:
+                        return (role_cfg.get("label",""),
+                                json.dumps(role_cfg.get("headers",[]), sort_keys=True))
+                    except Exception:
+                        return (role_cfg.get("label",""), str(role_cfg.get("headers",[])))
+
+                # If the snapshot explicitly contains archived roles, use it as truth.
+                # Otherwise, keep whatever the panel loaded, but don't let active ones remain archived.
+                if isinstance(archived_from_snapshot, list):
+                    obj.bac_panel.archived_role_data = [r for r in archived_from_snapshot if isinstance(r, dict)]
+
+                # Build sets for de-dup / reconciliation
+                active_list = [r for r in (active_from_snapshot or []) if isinstance(r, dict)]
+                active_sigs = {_sig(r) for r in active_list}
+                arch_sigs = {_sig(r) for r in (obj.bac_panel.archived_role_data or [])}
+
+                # If a role is active, ensure it is NOT in archived (active wins).
+                if arch_sigs:
+                    obj.bac_panel.archived_role_data = [
+                        r for r in (obj.bac_panel.archived_role_data or [])
+                        if _sig(r) not in active_sigs
+                    ]
+
+                # Now set active roles directly and rebuild UI
+                obj.bac_panel.role_data = list(active_list)
+
+                # Prefer a single rebuild from data for correctness
+                if hasattr(obj.bac_panel, "rebuild_role_tabs_from_data"):
+                    obj.bac_panel.rebuild_role_tabs_from_data()
+                else:
+                    # Fallback: add each role tab manually
+                    for role_cfg in obj.bac_panel.role_data:
+                        if hasattr(obj.bac_panel, "_add_role_tab_internal"):
+                            try:
+                                obj.bac_panel._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
+                            except Exception:
+                                pass
+
+                # Finalize UI niceties and persist
                 if hasattr(obj.bac_panel, "ensure_single_plus_tab"):
                     obj.bac_panel.ensure_single_plus_tab()
+                if hasattr(obj.bac_panel, "save_state"):
+                    obj.bac_panel.save_state()
+                # ---------- END ARCHIVE-SAFE RESTORE ----------
+
             except Exception as e:
                 print("DEBUG: BACCheckPanel creation failed:", str(e))
-                # import traceback
                 traceback.print_exc()
                 obj.bac_panel = JPanel()
                 obj.bac_panel.add(JLabel("BACCheckPanel failed to load."))
@@ -2343,10 +2432,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             kind       = entry.get("kind")  # may be None in older saves
 
             if kind is None:
-                # Heuristics for old history:
-                # - If param_name matches a role tab label -> 'role'
-                # - Else if there is a param_name or payload -> 'attack'
-                # - Else -> 'send'
                 if param_name in role_labels:
                     kind = "role"
                 elif (param_name is not None) or (payload is not None):
@@ -2365,11 +2450,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             )
             obj.history.append(e)
 
-        # --- THIS IS THE KEY FIX: show correct counter right after reload ---
+        # Show latest history item and update counter
         if obj.history:
             obj.current_idx = len(obj.history) - 1
             obj.show_entry(obj.current_idx)
-            # Force update counter label in case show_entry doesn't do it
             if hasattr(obj, "update_history_status"):
                 obj.update_history_status()
         else:
@@ -2378,6 +2462,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 obj.update_history_status()
 
         return obj
+
 
     def extract_sidepanel_lists(self, req_bytes):
         req_str = self.helpers.bytesToString(req_bytes)

@@ -36,6 +36,7 @@ LAST_EXPORT_DIR_KEY = "last-export-directory"
 LAST_POC_EXPORT_DIR_KEY = "last-poc-export-directory"
 LAST_BAC_ROLE_DIR_KEY = "last-bac-role-directory"
 LAST_PAYLOAD_STATE = {}
+ARCHIVED_KEY = "archived_roles"
 
 def extract_json_keys_recursive(data, path="", keys=None):
     if keys is None:
@@ -491,13 +492,29 @@ class BACCheckPanel(JPanel):
 
         left_strip.add(Box.createHorizontalStrut(6))
         left_strip.add(self.delete_bac_btn)
+        # Archive Roles button (📦)
+        self.archive_bac_btn = JButton(u"\U0001F4E6", actionPerformed=self.open_archive_manager)  # 📦
+        self.archive_bac_btn.setToolTipText("Archive / Unarchive roles")
+        self.archive_bac_btn.setMargin(Insets(0, 0, 0, 0))
+        self.archive_bac_btn.setPreferredSize(Dimension(30, 30))
+        self.archive_bac_btn.setMinimumSize(Dimension(30, 30))
+        left_strip.add(Box.createHorizontalStrut(6))
+        left_strip.add(self.archive_bac_btn)
 
         top_panel.add(left_strip, BorderLayout.WEST)
         self.add(top_panel, BorderLayout.NORTH)
         self.add(self.role_tabs, BorderLayout.CENTER)
 
-        # 1. Load existing roles for this host from BAC_HOST_CONFIGS (if any)
+        # 1. Load existing roles (unarchived) + archived for this host
+        self.archived_role_data = []
         config = BAC_HOST_CONFIGS.get(self.host)
+
+        # Load archived list first (no tabs for these)
+        if config and ARCHIVED_KEY in config and isinstance(config[ARCHIVED_KEY], list):
+            # Ensure structure
+            self.archived_role_data = list(config[ARCHIVED_KEY])
+
+        # Load active/unarchived roles into tabs
         if config and "roles" in config and config["roles"]:
             for role_cfg in config["roles"]:
                 self._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
@@ -824,6 +841,190 @@ class BACCheckPanel(JPanel):
         except Exception as e:
             JOptionPane.showMessageDialog(self, "Error deleting roles:\n" + str(e) + "\n" + traceback.format_exc())
 
+    def open_archive_manager(self, event=None):
+        try:
+            from javax.swing import JDialog
+            from javax.swing.border import EmptyBorder
+
+            dlg = JDialog()
+            dlg.setTitle("Archive Roles")
+            dlg.setModal(True)
+            dlg.setResizable(True)
+            dlg.setLayout(BorderLayout())
+
+            # Outer container with margins so it doesn't look cramped
+            main = JPanel(BorderLayout())
+            main.setBorder(EmptyBorder(12, 16, 12, 16))  # top, left, bottom, right
+
+            # ---- Left (Unarchived) panel ----
+            left_panel = JPanel()
+            left_panel.setLayout(BoxLayout(left_panel, BoxLayout.Y_AXIS))
+
+            # ---- Right (Archived) panel ----
+            right_panel = JPanel()
+            right_panel.setLayout(BoxLayout(right_panel, BoxLayout.Y_AXIS))
+
+            # Select-all checkboxes (created now; wired up in populate)
+            left_select_all  = JCheckBox(" Select All", False)
+            right_select_all = JCheckBox(" Select All", False)
+
+            # Keep references to role checkboxes so handlers can read selection states
+            left_checks  = []
+            right_checks = []
+
+            def populate_panels():
+                """Rebuild left/right lists from current self.role_data/self.archived_role_data."""
+                # Clear panels
+                left_panel.removeAll()
+                right_panel.removeAll()
+
+                # LEFT title + select all on top
+                left_panel.add(JLabel("Unarchived Roles"))
+                left_panel.add(left_select_all)
+                del left_checks[:]  # reset list
+
+                # Add unarchived role checkboxes
+                for role in self.role_data:
+                    name = role.get("label", "Role")
+                    cb = JCheckBox(" " + name, False)
+                    cb.putClientProperty("role_obj", role)
+                    left_checks.append(cb)
+                    left_panel.add(cb)
+
+                # RIGHT title + select all on top
+                right_panel.add(JLabel("Archived Roles"))
+                right_panel.add(right_select_all)
+                del right_checks[:]  # reset list
+
+                # Add archived role checkboxes
+                for role in self.archived_role_data:
+                    name = role.get("label", "Role")
+                    cb = JCheckBox(" " + name, False)
+                    cb.putClientProperty("role_obj", role)
+                    right_checks.append(cb)
+                    right_panel.add(cb)
+
+                # Wire (or rewire) select-all toggles
+                for al in left_select_all.getActionListeners():
+                    left_select_all.removeActionListener(al)
+                for ar in right_select_all.getActionListeners():
+                    right_select_all.removeActionListener(ar)
+
+                def left_toggle_all(evt=None):
+                    state = left_select_all.isSelected()
+                    for cb in left_checks:
+                        cb.setSelected(state)
+
+                def right_toggle_all(evt=None):
+                    state = right_select_all.isSelected()
+                    for cb in right_checks:
+                        cb.setSelected(state)
+
+                left_select_all.addActionListener(left_toggle_all)
+                right_select_all.addActionListener(right_toggle_all)
+
+                # Repaint/relayout after dynamic rebuild
+                left_panel.revalidate();  left_panel.repaint()
+                right_panel.revalidate(); right_panel.repaint()
+
+            # Scroll panes (wider so it feels roomy)
+            left_scroll  = JScrollPane(left_panel)
+            right_scroll = JScrollPane(right_panel)
+            left_scroll.setPreferredSize(Dimension(300, 360))
+            right_scroll.setPreferredSize(Dimension(300, 360))
+
+            # ---- Center control buttons ----
+            mid = JPanel()
+            mid.setLayout(BoxLayout(mid, BoxLayout.Y_AXIS))
+
+            def mkbtn(txt, handler):
+                b = JButton(txt, actionPerformed=handler)
+                b.setAlignmentX(0.5)
+                b.setMaximumSize(Dimension(80, 28))
+                b.setMinimumSize(Dimension(80, 28))
+                b.setPreferredSize(Dimension(80, 28))
+                return b
+
+            def move_selected_to_archive(evt=None):
+                moved = [cb.getClientProperty("role_obj") for cb in left_checks if cb.isSelected()]
+                # Remove from active
+                for role in moved:
+                    if role in self.role_data:
+                        self.role_data.remove(role)
+                # Add to archived
+                if moved:
+                    self.archived_role_data.extend(moved)
+                self.save_state()
+                self.rebuild_role_tabs_from_data()
+                self.ensure_single_plus_tab()
+                populate_panels()  # keep window open and refresh lists
+
+            def move_selected_to_unarchive(evt=None):
+                moved = [cb.getClientProperty("role_obj") for cb in right_checks if cb.isSelected()]
+                for role in moved:
+                    if role in self.archived_role_data:
+                        self.archived_role_data.remove(role)
+                if moved:
+                    self.role_data.extend(moved)
+                self.save_state()
+                self.rebuild_role_tabs_from_data()
+                self.ensure_single_plus_tab()
+                populate_panels()
+
+            def move_all_to_archive(evt=None):
+                count = len(self.role_data)
+                if count:
+                    self.archived_role_data.extend(self.role_data)
+                    self.role_data = []
+                    self.save_state()
+                    self.rebuild_role_tabs_from_data()
+                    self.ensure_single_plus_tab()
+                populate_panels()
+
+            def move_all_to_unarchive(evt=None):
+                count = len(self.archived_role_data)
+                if count:
+                    self.role_data.extend(self.archived_role_data)
+                    self.archived_role_data = []
+                    self.save_state()
+                    self.rebuild_role_tabs_from_data()
+                    self.ensure_single_plus_tab()
+                populate_panels()
+
+            mid.add(Box.createVerticalGlue())
+            mid.add(mkbtn(">",  move_selected_to_archive))
+            mid.add(Box.createVerticalStrut(8))
+            mid.add(mkbtn("<",  move_selected_to_unarchive))
+            mid.add(Box.createVerticalStrut(16))
+            mid.add(mkbtn(">>", move_all_to_archive))
+            mid.add(Box.createVerticalStrut(8))
+            mid.add(mkbtn("<<", move_all_to_unarchive))
+            mid.add(Box.createVerticalGlue())
+
+            # Assemble dialog content within the margined 'main' panel
+            center = JPanel(BorderLayout())
+            center.add(left_scroll,  BorderLayout.WEST)
+            center.add(mid,          BorderLayout.CENTER)
+            center.add(right_scroll, BorderLayout.EAST)
+
+            main.add(center, BorderLayout.CENTER)
+
+            # Bottom close button
+            bottom = JPanel(FlowLayout(FlowLayout.RIGHT))
+            bottom.add(JButton("Close", actionPerformed=lambda e: dlg.dispose()))
+            main.add(bottom, BorderLayout.SOUTH)
+
+            dlg.add(main, BorderLayout.CENTER)
+            dlg.setMinimumSize(Dimension(820, 520))  # larger default size
+            dlg.pack()
+            dlg.setLocationRelativeTo(self)
+
+            populate_panels()  # initial fill
+            dlg.setVisible(True)
+
+        except Exception as e:
+            JOptionPane.showMessageDialog(self, "Archive Manager Error:\n" + str(e) + "\n" + traceback.format_exc())
+
 
     def _add_role_tab_internal(self, label=None, config=None):
         # Used for initial load - appends at end before "+" tab
@@ -868,7 +1069,10 @@ class BACCheckPanel(JPanel):
         self.save_state()
 
     def save_state(self):
-        BAC_HOST_CONFIGS[self.host] = {"roles": list(self.role_data)}
+        BAC_HOST_CONFIGS[self.host] = {
+            "roles": list(self.role_data),
+            ARCHIVED_KEY: list(getattr(self, "archived_role_data", []))
+        }
         if hasattr(self, "on_save_callback") and self.on_save_callback:
             self.on_save_callback(self.host)
 

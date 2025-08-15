@@ -887,6 +887,7 @@ class BACCheckPanel(JPanel):
                 for role in self.role_data:
                     name = role.get("label", "Role")
                     cb = JCheckBox(" " + name, False)
+                    cb.setToolTipText(name)  # Show full name on hover
                     cb.putClientProperty("role_obj", role)
                     left_checks.append(cb)
                     left_panel.add(cb)
@@ -900,6 +901,7 @@ class BACCheckPanel(JPanel):
                 for role in self.archived_role_data:
                     name = role.get("label", "Role")
                     cb = JCheckBox(" " + name, False)
+                    cb.setToolTipText(name)  # Show full name on hover
                     cb.putClientProperty("role_obj", role)
                     right_checks.append(cb)
                     right_panel.add(cb)
@@ -1010,8 +1012,93 @@ class BACCheckPanel(JPanel):
             main.add(center, BorderLayout.CENTER)
 
             # Bottom close button
-            bottom = JPanel(FlowLayout(FlowLayout.RIGHT))
-            bottom.add(JButton("Close", actionPerformed=lambda e: dlg.dispose()))
+            # Bottom bar: left = Delete Selected, right = Close
+            bottom = JPanel(BorderLayout())
+
+            left_actions = JPanel(FlowLayout(FlowLayout.LEFT))
+            delete_btn = JButton("Delete Selected")
+
+            def delete_selected(evt=None):
+                # Collect selected roles from both columns
+                selected_left  = [cb for cb in left_checks  if cb.isSelected()]
+                selected_right = [cb for cb in right_checks if cb.isSelected()]
+
+                if not selected_left and not selected_right:
+                    JOptionPane.showMessageDialog(main, "No roles selected to delete.")
+                    return
+
+                # Names and objects
+                del_names = []
+                del_active_roles = []   # from self.role_data
+                del_arch_roles   = []   # from self.archived_role_data
+
+                for cb in selected_left:
+                    role = cb.getClientProperty("role_obj")
+                    name = cb.getText().strip()
+                    del_names.append(name)
+                    del_active_roles.append(role)
+
+                for cb in selected_right:
+                    role = cb.getClientProperty("role_obj")
+                    name = cb.getText().strip()
+                    del_names.append(name)
+                    del_arch_roles.append(role)
+
+                # First prompt with export reminder + list of roles about to be deleted
+                html = "<html>" \
+                    "<b>Reminder:</b> Consider exporting roles before deleting.<br><br>" \
+                    "You have selected <b>%d</b> role(s) for deletion:<br>%s</html>" % (
+                            len(del_names),
+                            "<br>".join("&nbsp;&nbsp;&bull; " + name for name in del_names)
+                    )
+                info = JEditorPane("text/html", html)
+                info.setEditable(False)
+                info.setOpaque(False)
+
+                res = JOptionPane.showConfirmDialog(main, info, "Delete Roles – Review Selection", JOptionPane.OK_CANCEL_OPTION)
+                if res != JOptionPane.OK_OPTION:
+                    return
+
+                # Final confirmation
+                confirm_html = "<html>Are you sure you want to permanently delete <b>%d</b> role(s)?<br>" \
+                            "This action cannot be undone.</html>" % len(del_names)
+                confirm = JEditorPane("text/html", confirm_html)
+                confirm.setEditable(False)
+                confirm.setOpaque(False)
+
+                res2 = JOptionPane.showConfirmDialog(main, confirm, "Confirm Deletion", JOptionPane.OK_CANCEL_OPTION)
+                if res2 != JOptionPane.OK_OPTION:
+                    return
+
+                # Perform deletion
+                try:
+                    for r in del_active_roles:
+                        if r in self.role_data:
+                            self.role_data.remove(r)
+                    for r in del_arch_roles:
+                        if r in self.archived_role_data:
+                            self.archived_role_data.remove(r)
+
+                    # Persist + rebuild UI in the main panel
+                    self.save_state()
+                    self.rebuild_role_tabs_from_data()
+                    self.ensure_single_plus_tab()
+
+                    # Refresh the Archive window lists without closing it
+                    populate_panels()
+
+                    JOptionPane.showMessageDialog(main, "Deleted %d role(s)." % len(del_names))
+                except Exception as ex:
+                    JOptionPane.showMessageDialog(main, "Error deleting roles:\n" + str(ex))
+
+            delete_btn.addActionListener(delete_selected)
+            left_actions.add(delete_btn)
+
+            right_actions = JPanel(FlowLayout(FlowLayout.RIGHT))
+            right_actions.add(JButton("Close", actionPerformed=lambda e: dlg.dispose()))
+
+            bottom.add(left_actions,  BorderLayout.WEST)
+            bottom.add(right_actions, BorderLayout.EAST)
             main.add(bottom, BorderLayout.SOUTH)
 
             dlg.add(main, BorderLayout.CENTER)

@@ -622,39 +622,109 @@ class BACCheckPanel(JPanel):
 
     def export_bac_roles(self, event):
         try:
-            if not self.role_data:
-                JOptionPane.showMessageDialog(self, "No BAC roles to export.")
+            total_active = len(getattr(self, "role_data", []) or [])
+            total_arch   = len(getattr(self, "archived_role_data", []) or [])
+            if total_active == 0 and total_arch == 0:
+                JOptionPane.showMessageDialog(self, "No BAC roles to export (active or archived).")
                 return
-            # --- Step 1: build a panel of checkboxes with Select All ---
-            panel = JPanel()
-            panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
-            select_all = JCheckBox(" Select All", True)
-            panel.add(select_all)
-            checks = []
-            role_names = [role.get("label", "Role #%d" % (i+1)) for i, role in enumerate(self.role_data)]
-            for i, name in enumerate(role_names):
+
+            # ---------- Build two-column selector (Unarchived | Archived) ----------
+            from javax.swing.border import EmptyBorder
+
+            main = JPanel(BorderLayout())
+            main.setBorder(EmptyBorder(10, 12, 10, 12))
+
+            left_panel  = JPanel(); left_panel.setLayout(BoxLayout(left_panel, BoxLayout.Y_AXIS))
+            right_panel = JPanel(); right_panel.setLayout(BoxLayout(right_panel, BoxLayout.Y_AXIS))
+
+            left_select_all  = JCheckBox(" Select All", True)
+            right_select_all = JCheckBox(" Select All", True)
+
+            left_checks  = []
+            right_checks = []
+
+            # Left header
+            left_panel.add(JLabel("Unarchived Roles"))
+            left_panel.add(left_select_all)
+            for i, role in enumerate(self.role_data):
+                # try tab title for friendlier name
+                try:
+                    title = self.role_tabs.getTitleAt(i)
+                    name = title if title else role.get("label", "Role")
+                except:
+                    name = role.get("label", "Role")
                 cb = JCheckBox(" " + name, True)
-                checks.append(cb)
-                panel.add(cb)
-            def toggle_all(evt=None):
-                state = select_all.isSelected()
-                for cb in checks:
-                    cb.setSelected(state)
-            select_all.addActionListener(toggle_all)
-            scroll = JScrollPane(panel)
-            scroll.setPreferredSize(Dimension(300, min((len(checks) + 1) * 30, 300)))
-            res = JOptionPane.showConfirmDialog(self, scroll, "Select BAC roles to export", JOptionPane.OK_CANCEL_OPTION)
+                cb.setToolTipText(name)
+                cb.putClientProperty("role_obj", role)
+                left_checks.append(cb)
+                left_panel.add(cb)
+
+            # Right header
+            right_panel.add(JLabel("Archived Roles"))
+            right_panel.add(right_select_all)
+            for role in (self.archived_role_data or []):
+                name = role.get("label", "Role")
+                cb = JCheckBox(" " + name, True)
+                cb.setToolTipText(name)
+                cb.putClientProperty("role_obj", role)
+                right_checks.append(cb)
+                right_panel.add(cb)
+
+            def left_toggle_all(evt=None):
+                st = left_select_all.isSelected()
+                for cb in left_checks: cb.setSelected(st)
+            def right_toggle_all(evt=None):
+                st = right_select_all.isSelected()
+                for cb in right_checks: cb.setSelected(st)
+
+            # (Re)wire
+            for al in list(left_select_all.getActionListeners() or []):
+                left_select_all.removeActionListener(al)
+            for ar in list(right_select_all.getActionListeners() or []):
+                right_select_all.removeActionListener(ar)
+            left_select_all.addActionListener(left_toggle_all)
+            right_select_all.addActionListener(right_toggle_all)
+
+            left_scroll  = JScrollPane(left_panel);  left_scroll.setPreferredSize(Dimension(300, 360))
+            right_scroll = JScrollPane(right_panel); right_scroll.setPreferredSize(Dimension(300, 360))
+
+            center = JPanel()
+            center.setLayout(BoxLayout(center, BoxLayout.X_AXIS))
+            center.add(left_scroll)
+            center.add(Box.createHorizontalStrut(12))  # reduced gap
+            center.add(right_scroll)
+
+            main.add(center, BorderLayout.CENTER)
+
+            # ---------- Confirm + write file ----------
+            res = JOptionPane.showConfirmDialog(self, main, "Select BAC roles to export", JOptionPane.OK_CANCEL_OPTION)
             if res != JOptionPane.OK_OPTION:
                 return
-            selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
-            if not selected_indices:
+
+            # Build export list with archived flag
+            export_list = []
+            for cb in left_checks:
+                if cb.isSelected():
+                    role = cb.getClientProperty("role_obj")
+                    role_out = dict(role)
+                    role_out["archived"] = False
+                    export_list.append(role_out)
+            for cb in right_checks:
+                if cb.isSelected():
+                    role = cb.getClientProperty("role_obj")
+                    role_out = dict(role)
+                    role_out["archived"] = True
+                    export_list.append(role_out)
+
+            if not export_list:
                 JOptionPane.showMessageDialog(self, "No roles selected.")
                 return
-            export_list = [self.role_data[idx] for idx in selected_indices]
+
             last_dir = load_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY) if self.callbacks else None
             chooser = JFileChooser(last_dir) if last_dir and os.path.isdir(last_dir) else JFileChooser()
             chooser.setDialogTitle("Export BAC Roles As")
             chooser.setSelectedFile(File("bac_roles_%s.json" % self.host.replace(':', '_')))
+
             if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
                 file = chooser.getSelectedFile()
                 out_path = file.getAbsolutePath()
@@ -662,73 +732,228 @@ class BACCheckPanel(JPanel):
                     out_path += ".json"
                 if self.callbacks:
                     save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(out_path))
+                # Write pretty JSON
                 with codecs.open(out_path, "w", encoding="utf-8") as f:
                     json.dump(export_list, f, indent=2)
-                JOptionPane.showMessageDialog(self, "Exported %d BAC roles to:\n%s" % (len(export_list), out_path))
+                JOptionPane.showMessageDialog(self, "Exported %d BAC role(s) to:\n%s" % (len(export_list), out_path))
         except Exception as e:
             JOptionPane.showMessageDialog(self, "Error exporting BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
+
 
     def import_bac_roles(self, event):
         try:
             last_dir = load_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY) if self.callbacks else None
-            if last_dir and os.path.isdir(last_dir):
-                chooser = JFileChooser(last_dir)
-            else:
-                chooser = JFileChooser()
+            chooser = JFileChooser(last_dir) if (last_dir and os.path.isdir(last_dir)) else JFileChooser()
             chooser.setDialogTitle("Import BAC Roles (.json)")
-            if chooser.showOpenDialog(None) == JFileChooser.APPROVE_OPTION:
-                file = chooser.getSelectedFile()
-                in_path = file.getAbsolutePath()
-                if self.callbacks:
-                    save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(in_path))
-                with codecs.open(in_path, "r", encoding="utf-8") as f:
-                    imported = json.load(f)
-                if isinstance(imported, dict):
-                    imported = [imported]
-                if not imported:
-                    JOptionPane.showMessageDialog(self, "No BAC roles found in file.")
-                    return
-                
-                # --- Build a panel of checkboxes with Select All ---
-                panel = JPanel()
-                panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
-                select_all = JCheckBox(" Select All", True)
-                panel.add(select_all)
-                checks = []
-                role_names = [role.get("label", "Role #%d" % (i+1)) for i, role in enumerate(imported)]
-                for i, name in enumerate(role_names):
-                    cb = JCheckBox(" " + name, True)
-                    checks.append(cb)
-                    panel.add(cb)
+            if chooser.showOpenDialog(None) != JFileChooser.APPROVE_OPTION:
+                return
 
-                def toggle_all(evt=None):
-                    state = select_all.isSelected()
-                    for cb in checks:
-                        cb.setSelected(state)
+            file = chooser.getSelectedFile()
+            in_path = file.getAbsolutePath()
+            if self.callbacks:
+                save_setting(self.callbacks, LAST_BAC_ROLE_DIR_KEY, os.path.dirname(in_path))
 
-                select_all.addActionListener(toggle_all)
+            with codecs.open(in_path, "r", encoding="utf-8") as f:
+                imported = json.load(f)
 
-                scroll = JScrollPane(panel)
-                scroll.setPreferredSize(Dimension(300, min((len(checks) + 1) * 30, 300)))
-                res = JOptionPane.showConfirmDialog(self, scroll, "Select BAC roles to import", JOptionPane.OK_CANCEL_OPTION)
-                if res != JOptionPane.OK_OPTION:
-                    return
+            # Normalize to list
+            if isinstance(imported, dict):
+                imported = [imported]
+            if not isinstance(imported, list):
+                JOptionPane.showMessageDialog(self, "Invalid file format. Expecting a list or object.")
+                return
+            if not imported:
+                JOptionPane.showMessageDialog(self, "No BAC roles found in file.")
+                return
 
-                selected_indices = [i for i, cb in enumerate(checks) if cb.isSelected()]
-                if not selected_indices:
-                    JOptionPane.showMessageDialog(self, "No roles selected.")
-                    return
+            # Split imported by "archived" flag (default False if absent)
+            imported_active  = []
+            imported_arch    = []
+            for role in imported:
+                if not isinstance(role, dict):
+                    continue
+                is_arch = bool(role.get("archived", False))
+                role_copy = dict(role)  # keep their 'archived' field for now
+                if is_arch:
+                    imported_arch.append(role_copy)
+                else:
+                    imported_active.append(role_copy)
 
-                # Insert imported roles before the plus tab
-                plus_idx = self.role_tabs.getTabCount() - 1
-                for offset, idx in enumerate(selected_indices):
-                    role_cfg = imported[idx]
-                    self._add_role_tab_internal(role_cfg.get("label", None), role_cfg)
-                self.save_state()
-                self.ensure_single_plus_tab()
-                JOptionPane.showMessageDialog(self, "Imported %d BAC roles." % len(selected_indices))
+            # ---------- Ask how to apply status ----------
+            status_panel = JPanel()
+            status_panel.setLayout(BoxLayout(status_panel, BoxLayout.Y_AXIS))
+            status_panel.add(JLabel("Choose how to apply status to imported roles:"))
+            keep_rb = JRadioButton("Keep status from file (archived/unarchived as exported)", True)
+            unarch_rb = JRadioButton("Unarchive all imported roles", False)
+            grp = ButtonGroup(); grp.add(keep_rb); grp.add(unarch_rb)
+            status_panel.add(keep_rb); status_panel.add(unarch_rb)
+
+            res_status = JOptionPane.showConfirmDialog(self, status_panel, "Import Options", JOptionPane.OK_CANCEL_OPTION)
+            if res_status != JOptionPane.OK_OPTION:
+                return
+            unarchive_all = unarch_rb.isSelected()
+
+            # ---------- Selection UI (2 columns like Archive/Delete) ----------
+            from javax.swing.border import EmptyBorder
+            main = JPanel(BorderLayout())
+            main.setBorder(EmptyBorder(10, 12, 10, 12))
+
+            left_panel  = JPanel(); left_panel.setLayout(BoxLayout(left_panel, BoxLayout.Y_AXIS))
+            right_panel = JPanel(); right_panel.setLayout(BoxLayout(right_panel, BoxLayout.Y_AXIS))
+
+            left_select_all  = JCheckBox(" Select All", True)
+            right_select_all = JCheckBox(" Select All", True)
+
+            left_checks  = []
+            right_checks = []
+
+            left_panel.add(JLabel("Unarchived (from file)"))
+            left_panel.add(left_select_all)
+            for role in imported_active:
+                name = role.get("label", "Role")
+                cb = JCheckBox(" " + name, True)
+                cb.setToolTipText(name)
+                cb.putClientProperty("role_obj", role)
+                left_checks.append(cb)
+                left_panel.add(cb)
+
+            right_panel.add(JLabel("Archived (from file)"))
+            right_panel.add(right_select_all)
+            for role in imported_arch:
+                name = role.get("label", "Role")
+                cb = JCheckBox(" " + name, True)
+                cb.setToolTipText(name)
+                cb.putClientProperty("role_obj", role)
+                right_checks.append(cb)
+                right_panel.add(cb)
+
+            def left_toggle_all(evt=None):
+                st = left_select_all.isSelected()
+                for cb in left_checks: cb.setSelected(st)
+            def right_toggle_all(evt=None):
+                st = right_select_all.isSelected()
+                for cb in right_checks: cb.setSelected(st)
+            for al in list(left_select_all.getActionListeners() or []):
+                left_select_all.removeActionListener(al)
+            for ar in list(right_select_all.getActionListeners() or []):
+                right_select_all.removeActionListener(ar)
+            left_select_all.addActionListener(left_toggle_all)
+            right_select_all.addActionListener(right_toggle_all)
+
+            left_scroll  = JScrollPane(left_panel);  left_scroll.setPreferredSize(Dimension(300, 360))
+            right_scroll = JScrollPane(right_panel); right_scroll.setPreferredSize(Dimension(300, 360))
+
+            center = JPanel()
+            center.setLayout(BoxLayout(center, BoxLayout.X_AXIS))
+            center.add(left_scroll)
+            center.add(Box.createHorizontalStrut(12))  # tight gap like other dialogs
+            center.add(right_scroll)
+            main.add(center, BorderLayout.CENTER)
+
+            res_pick = JOptionPane.showConfirmDialog(self, main, "Select BAC roles to import", JOptionPane.OK_CANCEL_OPTION)
+            if res_pick != JOptionPane.OK_OPTION:
+                return
+
+            selected_active = [cb.getClientProperty("role_obj") for cb in left_checks  if cb.isSelected()]
+            selected_arch   = [cb.getClientProperty("role_obj") for cb in right_checks if cb.isSelected()]
+            total_sel = len(selected_active) + len(selected_arch)
+            if total_sel == 0:
+                JOptionPane.showMessageDialog(self, "No roles selected.")
+                return
+
+            # ---------- Duplicate guard ----------
+            # Build canonical signature (label + headers + extras + force) for reliable comparison
+            def _sig(role_cfg):
+                try:
+                    return (
+                        role_cfg.get("label", ""),
+                        json.dumps(role_cfg.get("headers", []), sort_keys=True),
+                        bool(role_cfg.get("extra_enabled", False)),
+                        role_cfg.get("extra_name", ""),
+                        role_cfg.get("extra_value", ""),
+                        bool(role_cfg.get("force", False)),
+                    )
+                except Exception:
+                    # Fallback if something is non-serializable
+                    return (
+                        role_cfg.get("label", ""),
+                        str(role_cfg.get("headers", [])),
+                        bool(role_cfg.get("extra_enabled", False)),
+                        role_cfg.get("extra_name", ""),
+                        role_cfg.get("extra_value", ""),
+                        bool(role_cfg.get("force", False)),
+                    )
+
+            existing_sigs_active = set(_sig(r) for r in (getattr(self, "role_data", []) or []))
+            existing_sigs_arch   = set(_sig(r) for r in (getattr(self, "archived_role_data", []) or []))
+
+            # Also guard against duplicates *within* the import selection itself
+            seen_import_sigs = set()
+
+            added_count = 0
+            skipped_dupes = 0
+
+            def _clean_for_store(cfg):
+                # We don't store 'archived' inside role objects; strip it if present
+                try:
+                    cfg.pop("archived", None)
+                except:
+                    pass
+                return cfg
+
+            if unarchive_all:
+                # All selected go to ACTIVE; consider duplicates across BOTH stores
+                for role_cfg in (selected_active + selected_arch):
+                    s = _sig(role_cfg)
+                    if s in seen_import_sigs or s in existing_sigs_active or s in existing_sigs_arch:
+                        skipped_dupes += 1
+                        continue
+                    seen_import_sigs.add(s)
+                    self._add_role_tab_internal(role_cfg.get("label", None), _clean_for_store(dict(role_cfg)))
+                    existing_sigs_active.add(s)
+                    added_count += 1
+            else:
+                # Keep status from file
+                # 1) Active selections -> ACTIVE
+                for role_cfg in selected_active:
+                    s = _sig(role_cfg)
+                    if s in seen_import_sigs or s in existing_sigs_active or s in existing_sigs_arch:
+                        skipped_dupes += 1
+                        continue
+                    seen_import_sigs.add(s)
+                    self._add_role_tab_internal(role_cfg.get("label", None), _clean_for_store(dict(role_cfg)))
+                    existing_sigs_active.add(s)
+                    added_count += 1
+
+                # 2) Archived selections -> ARCHIVED store
+                if selected_arch:
+                    if not hasattr(self, "archived_role_data") or self.archived_role_data is None:
+                        self.archived_role_data = []
+                    for role_cfg in selected_arch:
+                        s = _sig(role_cfg)
+                        if s in seen_import_sigs or s in existing_sigs_active or s in existing_sigs_arch:
+                            skipped_dupes += 1
+                            continue
+                        seen_import_sigs.add(s)
+                        self.archived_role_data.append(_clean_for_store(dict(role_cfg)))
+                        existing_sigs_arch.add(s)
+                        added_count += 1
+
+            # Persist + tidy UI
+            self.save_state()
+            self.ensure_single_plus_tab()
+            self.rebuild_role_tabs_from_data()  # shows new actives
+
+            msg = "Imported %d BAC role(s)." % added_count
+            if skipped_dupes:
+                msg += " Skipped %d duplicate(s)." % skipped_dupes
+            JOptionPane.showMessageDialog(self, msg)
+
         except Exception as e:
             JOptionPane.showMessageDialog(self, "Error importing BAC roles:\n" + str(e) + "\n" + traceback.format_exc())
+
+
+
 
     def delete_bac_roles(self, event):
         try:

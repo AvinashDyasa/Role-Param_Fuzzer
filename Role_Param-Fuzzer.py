@@ -732,114 +732,170 @@ class BACCheckPanel(JPanel):
 
     def delete_bac_roles(self, event):
         try:
-            if not self.role_data:
-                JOptionPane.showMessageDialog(self, "No roles to delete.")
+            total_active = len(getattr(self, "role_data", []) or [])
+            total_arch   = len(getattr(self, "archived_role_data", []) or [])
+            if total_active == 0 and total_arch == 0:
+                JOptionPane.showMessageDialog(self, "No roles to delete (active or archived).")
                 return
 
-            # Build a confirmation panel with ALL roles (enabled pre-checked, disabled shown unticked)
-            container = JPanel()
-            container.setLayout(BoxLayout(container, BoxLayout.Y_AXIS))
-            container.setAlignmentX(JPanel.LEFT_ALIGNMENT)
+            from javax.swing import JDialog
+            from javax.swing.border import EmptyBorder
 
-            # Proper HTML message
-            msg = JEditorPane("text/html",
-                            "<html><b>Reminder:</b> Consider exporting roles before deleting."
-                            "<br>Select the roles you want to delete, then click <b>OK</b>.</html>")
-            msg.setEditable(False)
-            msg.setOpaque(False)
-            msg.setAlignmentX(JEditorPane.LEFT_ALIGNMENT)
-            container.add(msg)
-            container.add(Box.createVerticalStrut(6))
+            dlg = JDialog()
+            dlg.setTitle("Delete Roles")
+            dlg.setModal(True)
+            dlg.setResizable(True)
+            dlg.setLayout(BorderLayout())
 
-            # Select All checkbox reflects initial state (all enabled?)
-            all_enabled_initial = all(r.get("enabled", True) for r in self.role_data)
-            select_all = JCheckBox(" Select All", all_enabled_initial)
-            select_all.setAlignmentX(JCheckBox.LEFT_ALIGNMENT)
-            select_all.setHorizontalAlignment(SwingConstants.LEFT)  # ensure left text alignment
-            container.add(select_all)
+            main = JPanel(BorderLayout())
+            main.setBorder(EmptyBorder(12, 16, 12, 16))
 
-            # Create one checkbox per role (pre-select enabled, show disabled unticked)
-            checks = []
-            idx_map = []  # map from checkbox index -> real role index
-            count_real_tabs = len(self.role_data)
-            for i in range(count_real_tabs):
-                # Prefer the tab title; fallback to stored label
+            # Panels for each side
+            left_panel  = JPanel(); left_panel.setLayout(BoxLayout(left_panel, BoxLayout.Y_AXIS))
+            right_panel = JPanel(); right_panel.setLayout(BoxLayout(right_panel, BoxLayout.Y_AXIS))
+
+            left_select_all  = JCheckBox(" Select All", False)
+            right_select_all = JCheckBox(" Select All", False)
+
+            left_checks  = []
+            right_checks = []
+
+            def populate():
+                left_panel.removeAll(); right_panel.removeAll()
+                del left_checks[:]; del right_checks[:]
+
+                # Left header
+                left_panel.add(JLabel("Unarchived Roles"))
+                left_panel.add(left_select_all)
+
+                for i, role in enumerate(self.role_data):
+                    try:
+                        title = self.role_tabs.getTitleAt(i)
+                        name = title if title else role.get("label", "Role")
+                    except:
+                        name = role.get("label", "Role")
+                    cb = JCheckBox(" " + name, False)
+                    cb.putClientProperty("role_obj", role)
+                    cb.setToolTipText(name)  # helper text for long names
+                    left_checks.append(cb)
+                    left_panel.add(cb)
+
+                # Right header
+                right_panel.add(JLabel("Archived Roles"))
+                right_panel.add(right_select_all)
+
+                for role in (self.archived_role_data or []):
+                    name = role.get("label", "Role")
+                    cb = JCheckBox(" " + name, False)
+                    cb.putClientProperty("role_obj", role)
+                    cb.setToolTipText(name)  # helper text for long names
+                    right_checks.append(cb)
+                    right_panel.add(cb)
+
+                # Select-all toggles
+                for al in list(left_select_all.getActionListeners() or []):
+                    left_select_all.removeActionListener(al)
+                for ar in list(right_select_all.getActionListeners() or []):
+                    right_select_all.removeActionListener(ar)
+
+                def left_toggle_all(evt=None):
+                    state = left_select_all.isSelected()
+                    for cb in left_checks: cb.setSelected(state)
+
+                def right_toggle_all(evt=None):
+                    state = right_select_all.isSelected()
+                    for cb in right_checks: cb.setSelected(state)
+
+                left_select_all.addActionListener(left_toggle_all)
+                right_select_all.addActionListener(right_toggle_all)
+
+                left_panel.revalidate(); left_panel.repaint()
+                right_panel.revalidate(); right_panel.repaint()
+
+            left_scroll  = JScrollPane(left_panel);  left_scroll.setPreferredSize(Dimension(300, 360))
+            right_scroll = JScrollPane(right_panel); right_scroll.setPreferredSize(Dimension(300, 360))
+
+            # Center container with reduced gap
+            center = JPanel()
+            center.setLayout(BoxLayout(center, BoxLayout.X_AXIS))
+            center.add(left_scroll)
+            center.add(Box.createHorizontalStrut(12))  # reduced from ~30 to 12px
+            center.add(right_scroll)
+
+            main.add(center, BorderLayout.CENTER)
+
+            # Bottom bar
+            bottom = JPanel(BorderLayout())
+            left_actions  = JPanel(FlowLayout(FlowLayout.LEFT))
+            right_actions = JPanel(FlowLayout(FlowLayout.RIGHT))
+
+            delete_btn = JButton("Delete Selected")
+
+            def do_delete(evt=None):
+                sel_active = [cb.getClientProperty("role_obj") for cb in left_checks if cb.isSelected()]
+                sel_arch   = [cb.getClientProperty("role_obj") for cb in right_checks if cb.isSelected()]
+                count = len(sel_active) + len(sel_arch)
+                if count == 0:
+                    JOptionPane.showMessageDialog(main, "No roles selected to delete.")
+                    return
+
+                names = []
+                for cb in left_checks:
+                    if cb.isSelected(): names.append(cb.getText().strip())
+                for cb in right_checks:
+                    if cb.isSelected(): names.append(cb.getText().strip())
+
+                html = "<html><b>Reminder:</b> Consider exporting roles before deleting." \
+                    "<br><br>You have selected <b>%d</b> role(s):<br>%s</html>" % (
+                        count, "<br>".join("&nbsp;&nbsp;&bull; " + n for n in names)
+                    )
+                info = JEditorPane("text/html", html); info.setEditable(False); info.setOpaque(False)
+                res = JOptionPane.showConfirmDialog(main, info, "Delete Roles – Review Selection", JOptionPane.OK_CANCEL_OPTION)
+                if res != JOptionPane.OK_OPTION:
+                    return
+
+                confirm_html = "<html>Are you sure you want to permanently delete <b>%d</b> role(s)?<br>" \
+                            "This action cannot be undone.</html>" % count
+                confirm = JEditorPane("text/html", confirm_html); confirm.setEditable(False); confirm.setOpaque(False)
+                res2 = JOptionPane.showConfirmDialog(main, confirm, "Confirm Deletion", JOptionPane.OK_CANCEL_OPTION)
+                if res2 != JOptionPane.OK_OPTION:
+                    return
+
                 try:
-                    name = self.role_tabs.getTitleAt(i)
-                except:
-                    name = None
-                if not name:
-                    name = self.role_data[i].get("label", "Role #%d" % (i + 1))
+                    for r in sel_active:
+                        if r in self.role_data: self.role_data.remove(r)
+                    for r in sel_arch:
+                        if r in (self.archived_role_data or []): self.archived_role_data.remove(r)
 
-                preselect = bool(self.role_data[i].get("enabled", True))
-                cb = JCheckBox(" " + name, preselect)
-                cb.setAlignmentX(JCheckBox.LEFT_ALIGNMENT)
-                cb.setHorizontalAlignment(SwingConstants.LEFT)  # ensure left text alignment
-                checks.append(cb)
-                idx_map.append(i)
-                container.add(cb)
+                    self.save_state()
+                    self.rebuild_role_tabs_from_data()
+                    self.ensure_single_plus_tab()
+                    populate()
+                    JOptionPane.showMessageDialog(main, "Deleted %d role(s)." % count)
+                except Exception as ex:
+                    JOptionPane.showMessageDialog(main, "Error deleting roles:\n" + str(ex))
 
-            def toggle_all(evt=None):
-                state = select_all.isSelected()
-                for cb in checks:
-                    cb.setSelected(state)
-            select_all.addActionListener(toggle_all)
+            delete_btn.addActionListener(do_delete)
+            close_btn = JButton("Close", actionPerformed=lambda e: dlg.dispose())
 
-            # Wrap in a WEST-anchored panel so content hugs the left inside the dialog/scrollpane
-            outer = JPanel(BorderLayout())
-            outer.add(container, BorderLayout.WEST)
+            left_actions.add(delete_btn)
+            right_actions.add(close_btn)
+            bottom.add(left_actions, BorderLayout.WEST)
+            bottom.add(right_actions, BorderLayout.EAST)
 
-            scroll = JScrollPane(outer)
-            scroll.setPreferredSize(Dimension(380, min((len(checks) + 3) * 30, 380)))
+            main.add(bottom, BorderLayout.SOUTH)
+            dlg.add(main, BorderLayout.CENTER)
 
-            res = JOptionPane.showConfirmDialog(self, scroll, "Delete Roles", JOptionPane.OK_CANCEL_OPTION)
-            if res != JOptionPane.OK_OPTION:
-                return
+            dlg.setMinimumSize(Dimension(780, 520))
+            dlg.pack()
+            dlg.setLocationRelativeTo(self)
 
-            # Roles actually selected for deletion
-            to_delete_real_indices = [idx_map[j] for j, cb in enumerate(checks) if cb.isSelected()]
-            if not to_delete_real_indices:
-                JOptionPane.showMessageDialog(self, "No roles selected for deletion.")
-                return
-
-            # Final confirmation with proper HTML list
-            names = []
-            for i in to_delete_real_indices:
-                try:
-                    nm = self.role_tabs.getTitleAt(i)
-                except:
-                    nm = None
-                if not nm:
-                    nm = self.role_data[i].get("label", "Role #%d" % (i + 1))
-                names.append(nm)
-
-            confirm_html = "<html>You are about to delete <b>%d</b> role(s):<br><br>%s<br><br>This cannot be undone. Continue?</html>" % (
-                len(to_delete_real_indices),
-                "<br>".join("&nbsp;&nbsp;&bull; " + n for n in names)
-            )
-            confirm = JEditorPane("text/html", confirm_html)
-            confirm.setEditable(False)
-            confirm.setOpaque(False)
-
-            res2 = JOptionPane.showConfirmDialog(self, confirm, "Confirm Deletion", JOptionPane.OK_CANCEL_OPTION)
-            if res2 != JOptionPane.OK_OPTION:
-                return
-
-            # Delete from role_data (delete highest index first to avoid shifting)
-            for i in sorted(to_delete_real_indices, reverse=True):
-                if 0 <= i < len(self.role_data):
-                    del self.role_data[i]
-
-            # Persist + rebuild UI
-            self.save_state()
-            self.rebuild_role_tabs_from_data()
-            self.ensure_single_plus_tab()
-            self.update_move_buttons_state()
-
-            JOptionPane.showMessageDialog(self, "Deleted %d role(s)." % len(to_delete_real_indices))
+            populate()
+            dlg.setVisible(True)
 
         except Exception as e:
-            JOptionPane.showMessageDialog(self, "Error deleting roles:\n" + str(e) + "\n" + traceback.format_exc())
+            JOptionPane.showMessageDialog(self, "Error opening Delete Roles:\n" + str(e) + "\n" + traceback.format_exc())
+
 
     def open_archive_manager(self, event=None):
         try:

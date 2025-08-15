@@ -1463,7 +1463,8 @@ class BACCheckPanel(JPanel):
             "extra_enabled": False,
             "extra_name": "",
             "extra_value": "",
-            "force": False
+            "force": False,
+            "auto_refresh": True
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         # Insert at plus_idx (which is at end, since only "+" at this point on init)
@@ -1486,7 +1487,8 @@ class BACCheckPanel(JPanel):
             "extra_enabled": False,
             "extra_name": "",
             "extra_value": "",
-            "force": False
+            "force": False,
+            "auto_refresh": True
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         self.role_tabs.insertTab(role_label, None, panel, None, plus_idx)
@@ -1524,6 +1526,21 @@ class BACCheckPanel(JPanel):
         headers_scroll.setMinimumSize(Dimension(300, 200))
         headers_scroll.setMaximumSize(Dimension(800, 400))
         panel.add(headers_scroll)
+
+        # --- Auto-refresh cookies option row (under headers) ---
+        options_row = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        auto_refresh_cb = JCheckBox(
+            "Auto refresh cookies (Set-Cookie > Cookie)",
+            bool(role_cfg.get("auto_refresh", True))
+        )
+        def _on_auto_refresh(evt=None):
+            role_cfg["auto_refresh"] = bool(auto_refresh_cb.isSelected())
+            if self.on_save_callback:
+                self.on_save_callback(self.host)
+        auto_refresh_cb.addActionListener(_on_auto_refresh)
+        options_row.add(auto_refresh_cb)
+        panel.add(options_row)
+        # --- End auto-refresh row ---
 
         # --- Add header row logic with improved wrapping and left alignment ---
         def add_header_row(header_val=None):
@@ -3348,6 +3365,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 header_lines, body = (req_str.split('\r\n\r\n', 1) + [""])[:2]
                 base_headers = header_lines.split('\r\n')
                 history = []
+
                 # Count how many roles are enabled (and not the '+' tab)
                 enabled_roles = 0
                 for idx, role in enumerate(list(self.bac_panel.role_data)):
@@ -3356,6 +3374,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                 if not self._begin_run(enabled_roles, label="Access Check"):
                     return
+
+                any_cookie_updated = False  # track if we updated any role cookies during this run
 
                 for idx, role in enumerate(list(self.bac_panel.role_data)):
                     if idx >= self.bac_panel.role_tabs.getTabCount() - 1 or not role.get("enabled", True):
@@ -3425,9 +3445,82 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         kind="role"
                     )
                     history.append(entry)
+
+                    # --- Auto refresh cookies from Set-Cookie (inline; per-role) ---
+                    try:
+                        if bool(role.get("auto_refresh", True)) and resp_bytes is not None:
+                            # Find the Cookie header slot in this role
+                            cookie_idx = None
+                            headers_list = role.get("headers", [])
+                            for i_h, h_h in enumerate(headers_list):
+                                if str(h_h.get("header", "")).strip().lower() == "cookie":
+                                    cookie_idx = i_h
+                                    break
+
+                            if cookie_idx is not None:
+                                old_cookie_str = headers_list[cookie_idx].get("value", "")
+                                if old_cookie_str and old_cookie_str.strip():
+                                    # Decode response to text to read headers
+                                    try:
+                                        s = self.helpers.bytesToString(resp_bytes)
+                                    except Exception:
+                                        try:
+                                            s = resp_bytes.tostring().decode("iso-8859-1")
+                                        except Exception:
+                                            try:
+                                                s = str(resp_bytes)
+                                            except Exception:
+                                                s = ""
+
+                                    header_blob = s.split("\r\n\r\n", 1)[0]
+                                    # Build Set-Cookie map: {name: value}
+                                    sc_map = {}
+                                    for _line in header_blob.split("\r\n"):
+                                        if _line.lower().startswith("set-cookie:"):
+                                            sc = _line.split(":", 1)[1].strip()
+                                            first = sc.split(";", 1)[0]
+                                            if "=" in first:
+                                                n, v = first.split("=", 1)
+                                                n = n.strip()
+                                                sc_map[n] = v.strip()
+
+                                    if sc_map:
+                                        # Restrict updates ONLY to cookies already present in old_cookie_str
+                                        present_names = []
+                                        for part in old_cookie_str.split(";"):
+                                            part = part.strip()
+                                            if part:
+                                                name = part.split("=", 1)[0].strip()
+                                                present_names.append(name)
+
+                                        allowed = {}
+                                        for nm in present_names:
+                                            if nm in sc_map:
+                                                allowed[nm] = sc_map[nm]
+
+                                        if allowed:
+                                            new_cookie_str = _merge_cookie_values_only(old_cookie_str, allowed)
+                                            if new_cookie_str != old_cookie_str:
+                                                headers_list[cookie_idx]["value"] = new_cookie_str
+                                                any_cookie_updated = True
+                    except Exception:
+                        pass
+                    # --- End auto refresh block ---
+
                     self._tick()
 
+                # append all results to history
                 self.history += history
+
+                # Persist updated roles if any cookie changed, and refresh UI once
+                if any_cookie_updated:
+                    try:
+                        if hasattr(self, "bac_panel") and self.bac_panel:
+                            self.bac_panel.save_state()
+                            self.bac_panel.rebuild_role_tabs_from_data()
+                            self.bac_panel.ensure_single_plus_tab()
+                    except Exception:
+                        pass
 
                 def do_ui_update():
                     if history:
@@ -3483,10 +3576,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     return
 
                 role = self.bac_panel.role_data[role_idx]
-                if not role.get("enabled", True):
-                    # still allow single check even if globally disabled (that’s the point)
-                    pass
-
                 # Build header map to override
                 role_headers = {
                     h['header'].strip().lower(): h['value']
@@ -3519,7 +3608,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 # Extra header support
                 if role.get('extra_enabled') and role.get('extra_name'):
                     ename = role.get('extra_name', '').strip()
-                    eval_ = role.get('extra_value', '')
+                    eval_  = role.get('extra_value', '')
                     ename_lc = ename.lower()
                     unchanged_headers = [
                         h for h in unchanged_headers
@@ -3551,9 +3640,76 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 self.history.append(entry)
                 self.current_idx = len(self.history) - 1
 
+                # --- Auto refresh cookies from Set-Cookie (inline; no extra helpers) ---
+                try:
+                    if bool(role.get("auto_refresh", True)) and resp_bytes is not None:
+                        # Find the Cookie header slot in this role
+                        cookie_idx = None
+                        headers_list = role.get("headers", [])
+                        for i, h in enumerate(headers_list):
+                            if str(h.get("header", "")).strip().lower() == "cookie":
+                                cookie_idx = i
+                                break
+
+                        if cookie_idx is not None:
+                            old_cookie_str = headers_list[cookie_idx].get("value", "")
+                            if old_cookie_str and old_cookie_str.strip():
+                                # Decode response to text to read headers
+                                try:
+                                    s = self.helpers.bytesToString(resp_bytes)
+                                except Exception:
+                                    try:
+                                        s = resp_bytes.tostring().decode("iso-8859-1")
+                                    except Exception:
+                                        try:
+                                            s = str(resp_bytes)
+                                        except Exception:
+                                            s = ""
+
+                                header_blob = s.split("\r\n\r\n", 1)[0]
+                                # Build Set-Cookie map: {name: value}
+                                sc_map = {}
+                                for line in header_blob.split("\r\n"):
+                                    if line.lower().startswith("set-cookie:"):
+                                        sc = line.split(":", 1)[1].strip()
+                                        first = sc.split(";", 1)[0]
+                                        if "=" in first:
+                                            n, v = first.split("=", 1)
+                                            n = n.strip()
+                                            sc_map[n] = v.strip()
+
+                                if sc_map:
+                                    # Restrict updates ONLY to cookies already present in old_cookie_str
+                                    present_names = []
+                                    for part in old_cookie_str.split(";"):
+                                        part = part.strip()
+                                        if part:
+                                            name = part.split("=", 1)[0].strip()
+                                            present_names.append(name)
+
+                                    allowed = {}
+                                    for nm in present_names:
+                                        if nm in sc_map:
+                                            allowed[nm] = sc_map[nm]
+
+                                    if allowed:
+                                        new_cookie_str = _merge_cookie_values_only(old_cookie_str, allowed)
+                                        if new_cookie_str != old_cookie_str:
+                                            headers_list[cookie_idx]["value"] = new_cookie_str
+                                            # Persist + refresh BAC UI if available
+                                            try:
+                                                if hasattr(self, "bac_panel") and self.bac_panel:
+                                                    self.bac_panel.save_state()
+                                                    self.bac_panel.rebuild_role_tabs_from_data()
+                                                    self.bac_panel.ensure_single_plus_tab()
+                                            except Exception:
+                                                pass
+                except Exception:
+                    pass
+                # --- End auto refresh block ---
+
                 SwingUtilities.invokeLater(lambda: (
                     self.show_entry(self.current_idx),
-                    # Immediately refresh the status square
                     self.update_status_indicator_from_entry(self.history[self.current_idx]),
                     self.resize_sidebar()
                 ))

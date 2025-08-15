@@ -107,6 +107,65 @@ def set_nested_value(obj, path, value):
     set_recursively(obj, 0, value)
     return obj
 
+def _parse_cookie_header_string(cookie_header):
+    """
+    Parses a Cookie header string into ordered list of (name, value) pairs.
+    Keeps original spacing around semicolons when we re-join.
+    """
+    parts = [p.strip() for p in cookie_header.split(';')]
+    pairs = []
+    for p in parts:
+        if not p:
+            continue
+        if '=' in p:
+            name, val = p.split('=', 1)
+            pairs.append((name.strip(), val))
+        else:
+            # Bare token (rare), keep as name with empty value
+            pairs.append((p.strip(), ""))
+    return pairs
+
+def _merge_cookie_values_only(existing_cookie_str, new_cookie_map):
+    """
+    Replace ONLY values of cookies that already exist in the header.
+    Do NOT add new cookies.
+    """
+    pairs = _parse_cookie_header_string(existing_cookie_str)
+    out_pairs = []
+    for name, val in pairs:
+        if name in new_cookie_map:
+            # Replace only the value part; keep as-is formatting for '=' and ordering
+            out_pairs.append((name, new_cookie_map[name]))
+        else:
+            out_pairs.append((name, val))
+    # Re-join with '; ' (common formatting)
+    return '; '.join(['{}={}'.format(n, v) if v != "" else n for n, v in out_pairs])
+
+def _cookie_editor_json_to_map(text):
+    """
+    Accepts Cookie Editor export JSON (array of objects with 'name' and 'value').
+    Returns {name: value}. Ignores entries without these keys.
+    Also accepts a dict with a 'cookies' list (some variants export that way).
+    """
+    data = json.loads(text.strip())
+    if isinstance(data, dict) and "cookies" in data and isinstance(data["cookies"], list):
+        items = data["cookies"]
+    elif isinstance(data, list):
+        items = data
+    else:
+        raise ValueError("Unrecognized Cookie Editor JSON format")
+
+    out = {}
+    for item in items:
+        try:
+            name = item.get("name")
+            value = item.get("value", "")
+            if name:
+                out[name] = value
+        except AttributeError:
+            # Skip if not an object
+            pass
+    return out
 
 
 def coerce_json_value(payload):
@@ -1540,13 +1599,88 @@ class BACCheckPanel(JPanel):
             gbc.gridx = 2
             gbc.weightx = 0.0
             gbc.fill = GridBagConstraints.NONE
+
+            # Panel to hold both buttons side-by-side
+            btns_panel = JPanel(FlowLayout(FlowLayout.CENTER, 2, 0))
+
             edit_btn = JButton(u"\u270E")  # ✎
             edit_btn.setToolTipText("Edit header value")
             edit_btn.setMargin(Insets(0, 0, 0, 0))
             edit_btn.setPreferredSize(Dimension(26, 26))
             edit_btn.setMinimumSize(Dimension(26, 26))
             edit_btn.setMaximumSize(Dimension(26, 26))
-            row.add(edit_btn, gbc)
+            btns_panel.add(edit_btn)
+
+            cookie_btn = JButton(u"\U0001F36A")  # 🍪
+            cookie_btn.setToolTipText("Paste Cookie Editor JSON to update existing cookies only")
+            cookie_btn.setMargin(Insets(0, 0, 0, 0))
+            cookie_btn.setPreferredSize(Dimension(26, 26))
+            cookie_btn.setMinimumSize(Dimension(26, 26))
+            cookie_btn.setMaximumSize(Dimension(26, 26))
+            btns_panel.add(cookie_btn)
+
+            row.add(btns_panel, gbc)
+
+            def open_cookie_paste_popup(evt=None):
+                # Small textarea dialog for pasting Cookie Editor JSON
+                area = JTextArea(12, 48)
+                area.setLineWrap(True)
+                area.setWrapStyleWord(True)
+                scroll = JScrollPane(area)
+                prompt = "Paste Cookie Editor JSON (only values for existing cookies will be replaced):"
+                res = JOptionPane.showConfirmDialog(self, scroll, prompt, JOptionPane.OK_CANCEL_OPTION)
+                if res != JOptionPane.OK_OPTION:
+                    return
+                raw = area.getText()
+                if not raw.strip():
+                    return
+                try:
+                    cookie_map = _cookie_editor_json_to_map(raw)
+                except Exception as e:
+                    JOptionPane.showMessageDialog(self, "Invalid Cookie Editor JSON:\n%s" % (str(e),))
+                    return
+
+                # Check which header this row is using
+                current_header_name = str(combo.getSelectedItem()).strip() if combo else ""
+                # We primarily target "Cookie" header; if not, we still try to merge the value as a cookie string.
+                if current_header_name.lower() != "cookie":
+                    # Soft warn, but continue
+                    reply = JOptionPane.showConfirmDialog(
+                        self,
+                        "This header is '%s', not 'Cookie'.\nProceed to treat its value as a Cookie string?" % current_header_name,
+                        "Confirm",
+                        JOptionPane.YES_NO_OPTION
+                    )
+                    if reply != JOptionPane.YES_OPTION:
+                        return
+
+                old_val = val_field.getText()
+                if not old_val.strip():
+                    JOptionPane.showMessageDialog(self, "Header value is empty; nothing to update.")
+                    return
+
+                try:
+                    new_val = _merge_cookie_values_only(old_val, cookie_map)
+                except Exception as e:
+                    JOptionPane.showMessageDialog(self, "Failed to merge cookies:\n%s" % (str(e),))
+                    return
+
+                # Update UI
+                val_field.setText(new_val)
+
+                # Persist to role config immediately
+                idx = None
+                for i, (p, _, _) in enumerate(header_rows):
+                    if p == row:
+                        idx = i
+                        break
+                if idx is not None:
+                    role_cfg["headers"][idx]["value"] = new_val
+
+                if self.on_save_callback:
+                    self.on_save_callback(self.host)
+
+            cookie_btn.addActionListener(open_cookie_paste_popup)
 
             def open_editor_popup(evt=None):
                 popup_area = JTextArea(val_field.getText(), 10, 60)

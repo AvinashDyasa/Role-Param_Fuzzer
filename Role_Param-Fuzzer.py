@@ -15,7 +15,7 @@ from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorControl
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
     SwingUtilities, JFileChooser, JSplitPane, JTable, JScrollPane, JTextField, JCheckBox, DefaultCellEditor, BorderFactory, BoxLayout, Box,
-    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar, JEditorPane
+    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar, JEditorPane, JDialog
 )
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
@@ -28,6 +28,7 @@ from java.lang import Boolean, Integer
 from java.io import File
 from javax.imageio import ImageIO
 from java.net import URL
+from javax.swing.border import EmptyBorder
 
 ### ---------bac
 # Global per-host BAC config storage
@@ -1022,8 +1023,7 @@ class BACCheckPanel(JPanel):
                 JOptionPane.showMessageDialog(self, "No roles to delete (active or archived).")
                 return
 
-            from javax.swing import JDialog
-            from javax.swing.border import EmptyBorder
+            
 
             dlg = JDialog()
             dlg.setTitle("Delete Roles")
@@ -1498,10 +1498,10 @@ class BACCheckPanel(JPanel):
         self.save_state()
 
     def save_state(self):
-        BAC_HOST_CONFIGS[self.host] = {
-            "roles": list(self.role_data),
-            ARCHIVED_KEY: list(getattr(self, "archived_role_data", []))
-        }
+        existing = BAC_HOST_CONFIGS.get(self.host, {})
+        existing["roles"] = list(self.role_data)
+        existing[ARCHIVED_KEY] = list(getattr(self, "archived_role_data", []))
+        BAC_HOST_CONFIGS[self.host] = existing
         if hasattr(self, "on_save_callback") and self.on_save_callback:
             self.on_save_callback(self.host)
 
@@ -2092,6 +2092,29 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)
 
         btn_panel.add(self.export_tabs_btn)
+
+        # Rules button (opens Rules dialog)
+        self.rules_btn = JButton("Rules")
+        def open_rules(evt=None):
+            try:
+                # detect host + available headers from current request/editor
+                req_bytes = self.req_editor.getMessage()
+                service = self.base_message.getHttpService() if self.base_message is not None else self.guess_service_from_request(req_bytes)
+                headers_list = []
+                try:
+                    analyzed = self.helpers.analyzeRequest(service, req_bytes)
+                    hdrs = list(analyzed.getHeaders())
+                    headers_list = [h.split(':',1)[0] for h in hdrs[1:] if ':' in h]
+                except:
+                    pass
+                if not headers_list:
+                    headers_list = ["Host","User-Agent","Accept","Accept-Language","Accept-Encoding","Connection","Referer","Origin","Content-Type","Content-Length","Cookie","Authorization","X-Requested-With"]
+                host_name = (service.getHost() if service else (getattr(self, "host", "") or "unknown")).lower()
+                RulesDialog(self, host_name, headers_list, self.callbacks)
+            except Exception as e:
+                JOptionPane.showMessageDialog(self, "Error opening Rules: " + str(e))
+        self.rules_btn.addActionListener(open_rules)
+        btn_panel.add(self.rules_btn)
         btn_panel.add(self.merge_export_tabs_btn)
         btn_panel.add(self.import_tabs_btn)
         btn_panel.add(self.screenshot_btn)
@@ -3054,6 +3077,26 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 headers.append("Content-Length: %d" % len(body))
                 req_bytes = self.helpers.buildHttpMessage(headers, body)
 
+                # Apply Rules -> Delete Headers
+                try:
+                    cfg_host = service.getHost()
+                except:
+                    cfg_host = self.host if hasattr(self, "host") else None
+                if cfg_host:
+                    cfg = get_bac_host_config(cfg_host)
+                    remove_list = cfg.get("remove_headers", [])
+                    if remove_list:
+                        _s = self.helpers.bytesToString(req_bytes)
+                        try:
+                            _hl, _bp = _s.split("\r\n\r\n", 1)
+                        except ValueError:
+                            _hl, _bp = _s, ""
+                        _lines = _hl.split("\r\n")
+                        _reqline = _lines[0]
+                        _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                        _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                        req_bytes = self.helpers.stringToBytes(_s2)
+
                 # now send
                 t0 = time.time()
                 resp = self.callbacks.makeHttpRequest(service, req_bytes)
@@ -3172,8 +3215,26 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
                         headers_mod.append("Content-Length: %d" % len(body_mod))
                         mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod)
+
+                        # Apply Rules -> Delete Headers
+                        cfg_host = service.getHost()
+                        cfg = get_bac_host_config(cfg_host)
+                        remove_list = cfg.get("remove_headers", [])
+                        if remove_list:
+                            _s = self.helpers.bytesToString(mod_req_bytes)
+                            try:
+                                _hl, _bp = _s.split("\r\n\r\n", 1)
+                            except ValueError:
+                                _hl, _bp = _s, ""
+                            _lines = _hl.split("\r\n")
+                            _reqline = _lines[0]
+                            _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                            _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                            mod_req_bytes = self.helpers.stringToBytes(_s2)
+
                         t0 = time.time()
                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+
                         dt_ms = int(round((time.time() - t0) * 1000))
                         resp_bytes = resp.getResponse()
                         size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
@@ -3266,8 +3327,25 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             
                             # Only send request if we actually modified something or found a parameter
                             if found_existing_param or mod_req_bytes != req_bytes:
+                                # Apply Rules -> Delete Headers
+                                cfg_host = service.getHost()
+                                cfg = get_bac_host_config(cfg_host)
+                                remove_list = cfg.get("remove_headers", [])
+                                if remove_list:
+                                    _s = self.helpers.bytesToString(mod_req_bytes)
+                                    try:
+                                        _hl, _bp = _s.split("\r\n\r\n", 1)
+                                    except ValueError:
+                                        _hl, _bp = _s, ""
+                                    _lines = _hl.split("\r\n")
+                                    _reqline = _lines[0]
+                                    _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                                    _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                                    mod_req_bytes = self.helpers.stringToBytes(_s2)
+
                                 t0 = time.time()
                                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+
                                 dt_ms = int(round((time.time() - t0) * 1000))
                                 resp_bytes = resp.getResponse()
                                 size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
@@ -3301,8 +3379,26 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                         headers_mod = [h for h in headers_mod if not h.lower().startswith("content-length")]
                                         headers_mod.append("Content-Length: %d" % len(body_mod_bytes))
                                         mod_req_bytes = self.helpers.buildHttpMessage(headers_mod, body_mod_bytes)
+
+                                        # Apply Rules -> Delete Headers
+                                        cfg_host = service.getHost()
+                                        cfg = get_bac_host_config(cfg_host)
+                                        remove_list = cfg.get("remove_headers", [])
+                                        if remove_list:
+                                            _s = self.helpers.bytesToString(mod_req_bytes)
+                                            try:
+                                                _hl, _bp = _s.split("\r\n\r\n", 1)
+                                            except ValueError:
+                                                _hl, _bp = _s, ""
+                                            _lines = _hl.split("\r\n")
+                                            _reqline = _lines[0]
+                                            _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                                            _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                                            mod_req_bytes = self.helpers.stringToBytes(_s2)
+
                                         t0 = time.time()
                                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+
                                         dt_ms = int(round((time.time() - t0) * 1000))
                                         resp_bytes = resp.getResponse()
                                         size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
@@ -3429,8 +3525,25 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body
                     mod_req_bytes = self.helpers.stringToBytes(new_req_str)
 
+                    # Apply Rules -> Delete Headers
+                    cfg_host = service.getHost()
+                    cfg = get_bac_host_config(cfg_host)
+                    remove_list = cfg.get("remove_headers", [])
+                    if remove_list:
+                        _s = self.helpers.bytesToString(mod_req_bytes)
+                        try:
+                            _hl, _bp = _s.split("\r\n\r\n", 1)
+                        except ValueError:
+                            _hl, _bp = _s, ""
+                        _lines = _hl.split("\r\n")
+                        _reqline = _lines[0]
+                        _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                        _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                        mod_req_bytes = self.helpers.stringToBytes(_s2)
+
                     t0 = time.time()
                     resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+
                     dt_ms = int(round((time.time() - t0) * 1000))
                     resp_bytes = resp.getResponse()
                     size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
@@ -3621,8 +3734,25 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body_part
                 mod_req_bytes = self.helpers.stringToBytes(new_req_str)
 
+                # Apply Rules -> Delete Headers
+                cfg_host = service.getHost()
+                cfg = get_bac_host_config(cfg_host)
+                remove_list = cfg.get("remove_headers", [])
+                if remove_list:
+                    _s = self.helpers.bytesToString(mod_req_bytes)
+                    try:
+                        _hl, _bp = _s.split("\r\n\r\n", 1)
+                    except ValueError:
+                        _hl, _bp = _s, ""
+                    _lines = _hl.split("\r\n")
+                    _reqline = _lines[0]
+                    _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                    _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                    mod_req_bytes = self.helpers.stringToBytes(_s2)
+
                 t0 = time.time()
                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
+
                 dt_ms = int(round((time.time() - t0) * 1000))
                 resp_bytes = resp.getResponse()
                 size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
@@ -4109,7 +4239,7 @@ class ClosableTabComponent(JPanel):
         dup_item.addActionListener(do_duplicate)
         popup.add(dup_item)
         self.setComponentPopupMenu(popup)
-        
+
     def set_checkbox_state(self, checked):
         if self.enable_checkbox is not None:
             self.enable_checkbox.setSelected(checked)
@@ -4404,6 +4534,106 @@ class MessageHistoryEntry(object):
         self.resp_time_ms = resp_time_ms
         self.resp_size_bytes = resp_size_bytes
         self.kind = kind  # "send", "attack", or "role"
+
+# ---------- Host config helper ----------
+def get_bac_host_config(host):
+    h = (host or "").lower()
+    if not h:
+        return {}
+    # exact match
+    cfg = BAC_HOST_CONFIGS.get(h)
+    if cfg:
+        return cfg
+    # fallback to parent domains (e.g., www.google.com -> google.com)
+    parts = h.split(".")
+    for i in range(1, len(parts) - 1):
+        cand = ".".join(parts[i:])
+        cfg = BAC_HOST_CONFIGS.get(cand)
+        if cfg:
+            return cfg
+    return {}
+
+# ---------- Rules Dialog ----------
+class RulesDialog(JDialog):
+    def __init__(self, parent, host, available_headers, callbacks):
+        JDialog.__init__(self)
+        self.setTitle("Rules for %s" % host)
+        self.setModal(True)
+        self.setLayout(BorderLayout())
+        self.setMinimumSize(Dimension(520, 420))
+
+        self.host = host
+        self.available_headers = available_headers or []
+        self._callbacks = callbacks
+
+        tabs = JTabbedPane()
+        tabs.addTab("Delete Headers", self.build_delete_headers_tab())
+        self.add(tabs, BorderLayout.CENTER)
+
+        self.setLocationRelativeTo(parent)
+        self.setVisible(True)
+
+    def build_delete_headers_tab(self):
+        panel = JPanel(BorderLayout())
+        self.rows_panel = JPanel()
+        self.rows_panel.setLayout(BoxLayout(self.rows_panel, BoxLayout.Y_AXIS))
+
+        # Load existing rules
+        self.remove_headers = list(BAC_HOST_CONFIGS.get(self.host, {}).get("remove_headers", []))
+        if not self.remove_headers:
+            self.add_row("")
+        else:
+            for h in self.remove_headers:
+                self.add_row(h)
+
+        add_btn = JButton("+ Add Header", actionPerformed=lambda e: self.add_row(""))
+        save_btn = JButton("Save", actionPerformed=lambda e: self.save_rules())
+
+        ctrl = JPanel(FlowLayout(FlowLayout.RIGHT))
+        ctrl.add(add_btn)
+        ctrl.add(save_btn)
+
+        panel.add(JScrollPane(self.rows_panel), BorderLayout.CENTER)
+        panel.add(ctrl, BorderLayout.SOUTH)
+        return panel
+
+    def add_row(self, value=""):
+        row = JPanel(FlowLayout(FlowLayout.LEFT))
+        combo = JComboBox(self.available_headers)
+        combo.setEditable(True)
+        combo.setPreferredSize(Dimension(220, 24))
+        if value:
+            combo.setSelectedItem(value)
+        del_btn = JButton("Delete Header", actionPerformed=lambda e, r=row: self.remove_row(r))
+        row.add(combo); row.add(del_btn)
+        row.putClientProperty("combo", combo)
+        self.rows_panel.add(row)
+        self.rows_panel.revalidate(); self.rows_panel.repaint()
+
+    def remove_row(self, row):
+        self.rows_panel.remove(row)
+        self.rows_panel.revalidate(); self.rows_panel.repaint()
+
+    def save_rules(self):
+        headers = []
+        for comp in self.rows_panel.getComponents():
+            combo = comp.getClientProperty("combo")
+            if combo:
+                val = ("" if combo.getSelectedItem() is None else str(combo.getSelectedItem())).strip()
+                if val:
+                    headers.append(val)
+        h = (self.host or "").lower()
+        if h not in BAC_HOST_CONFIGS:
+            BAC_HOST_CONFIGS[h] = {}
+        BAC_HOST_CONFIGS[h]["remove_headers"] = headers
+        try:
+            if self._callbacks is not None:
+                save_bac_configs(self._callbacks)
+        except:
+            pass
+        JOptionPane.showMessageDialog(self, "Saved %d header rule(s)" % len(headers))
+        self.dispose()
+
 # ---------- Main BurpExtender ----------
 class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
     def registerExtenderCallbacks(self, callbacks):

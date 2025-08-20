@@ -1936,13 +1936,6 @@ class BACCheckPanel(JPanel):
                          
 ### ------------------- Fuzzer Tab Main ----------------------
 
-# class MessageHistoryEntry(object):
-#     def __init__(self, req_bytes, resp_bytes, param_name=None, payload=None):
-#         self.req_bytes = req_bytes
-#         self.resp_bytes = resp_bytes
-#         self.param_name = param_name
-#         self.payload = payload
-#         self.highlight = None  # (start, end)
 
 class FuzzerPOCTab(JPanel, IMessageEditorController):
     def __init__(self, helpers, callbacks, base_message, save_tabs_state_callback, parent_extender=None):
@@ -1963,9 +1956,27 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         nav_button_size = Dimension(30, 28)
 
         self.access_check_btn = JButton("Access Check", actionPerformed=self.bac_check)
-        self.send_btn = JButton("Send")
-        self.attack_btn = JButton("Attack")
+        btn_dim = self.access_check_btn.getPreferredSize()
+        self.access_dropdown = JButton(u"\u25BE")
+        self.access_dropdown.setPreferredSize(Dimension(20, btn_dim.height))
+        self.access_dropdown.setFocusable(False)
+        self.access_dropdown.setToolTipText("Select tabs for Access Check")
+        self.access_dropdown.addActionListener(lambda e: self.open_multi_tab_dialog("Access Check"))
 
+        self.send_btn = JButton("Send")
+        self.send_dropdown = JButton(u"\u25BE")
+        self.send_dropdown.setPreferredSize(Dimension(20, btn_dim.height))
+        self.send_dropdown.setFocusable(False)
+        self.send_dropdown.setToolTipText("Select tabs to Send")
+        self.send_dropdown.addActionListener(lambda e: self.open_multi_tab_dialog("Send"))
+
+        self.attack_btn = JButton("Attack")
+        self.attack_dropdown = JButton(u"\u25BE")
+        self.attack_dropdown.setPreferredSize(Dimension(20, btn_dim.height))
+        self.attack_dropdown.setFocusable(False)
+        self.attack_dropdown.setToolTipText("Select tabs to Attack")
+        self.attack_dropdown.addActionListener(lambda e: self.open_multi_tab_dialog("Attack"))
+        
         # Previous dropdown ▼
         self.prev_dropdown = JButton(u"\u25BC")
         self.prev_dropdown.setFocusable(False)
@@ -2023,14 +2034,25 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.history_title.setMinimumSize(Dimension(260, 26))
 
         button_row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
-        button_row.add(self.access_check_btn)
-        button_row.add(self.send_btn)
-        button_row.add(self.attack_btn)
+        access_grp = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        access_grp.add(self.access_check_btn)
+        access_grp.add(self.access_dropdown)
+
+        send_grp = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        send_grp.add(self.send_btn)
+        send_grp.add(self.send_dropdown)
+
+        attack_grp = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        attack_grp.add(self.attack_btn)
+        attack_grp.add(self.attack_dropdown)
+
+        button_row.add(access_grp)
+        button_row.add(send_grp)
+        button_row.add(attack_grp)
         button_row.add(Box.createHorizontalStrut(15))  # spacer
         button_row.add(nav_panel)
         button_row.add(Box.createHorizontalStrut(8))
         button_row.add(self.history_title)
-
         toolbar.add(button_row)
         # Wrap toolbar (left) + status square (right)
         self.status_indicator = StatusIndicator(20)  # default enabled
@@ -2249,6 +2271,86 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.update_status()
         self.parent_extender = parent_extender
         SwingUtilities.invokeLater(lambda: self.force_layout())
+
+    # --- Multi-tab runner ---
+    def open_multi_tab_dialog(self, action_label):
+        try:
+            if not hasattr(self, "parent_extender") or self.parent_extender is None:
+                JOptionPane.showMessageDialog(self, "No parent extender/tabs found.")
+                return
+            tabs = self.parent_extender.tabs
+            total = tabs.getTabCount()
+            plus_idx = total - 1  # last "+" tab
+            if total <= 1:
+                JOptionPane.showMessageDialog(self, "No other tabs to run.")
+                return
+
+            # Default: current tab and all to the right (exclude "+")
+            cur = tabs.getSelectedIndex()
+            if cur == plus_idx:
+                cur = plus_idx - 1
+
+            dlg = JDialog(SwingUtilities.getWindowAncestor(self), action_label + " on multiple tabs", True)
+            dlg.setLayout(BorderLayout())
+            list_panel = JPanel()
+            list_panel.setLayout(BoxLayout(list_panel, BoxLayout.Y_AXIS))
+
+            checkboxes = []
+            select_all = JCheckBox("Select all")
+            def on_select_all(_):
+                for cb in checkboxes:
+                    cb.setSelected(select_all.isSelected())
+            select_all.addActionListener(on_select_all)
+            list_panel.add(select_all)
+
+            for i in range(0, plus_idx):
+                title = tabs.getTitleAt(i)
+                cb = JCheckBox("%d: %s" % (i+1, title))
+                cb.putClientProperty("tabIndex", i)
+                cb.setSelected(i >= cur)
+                checkboxes.append(cb)
+                list_panel.add(cb)
+
+            scroll = JScrollPane(list_panel)
+            scroll.setPreferredSize(Dimension(380, 260))
+            dlg.add(scroll, BorderLayout.CENTER)
+
+            btns = JPanel(FlowLayout(FlowLayout.RIGHT))
+            close_btn = JButton("Close")
+            run_btn = JButton(action_label)
+            close_btn.addActionListener(lambda _: dlg.dispose())
+
+            def do_run(_):
+                selected = [cb.getClientProperty("tabIndex") for cb in checkboxes if cb.isSelected()]
+                if not selected:
+                    JOptionPane.showMessageDialog(dlg, "No tabs selected.")
+                    return
+                for idx in selected:
+                    comp = tabs.getComponentAt(idx)
+                    self._run_action_on_tab(action_label, comp)
+                dlg.dispose()
+            run_btn.addActionListener(do_run)
+
+            btns.add(close_btn)
+            btns.add(run_btn)
+            dlg.add(btns, BorderLayout.SOUTH)
+            dlg.pack()
+            dlg.setLocationRelativeTo(self)
+            dlg.setVisible(True)
+        except Exception as e:
+            JOptionPane.showMessageDialog(self, "Error in multi-tab dialog: " + str(e))
+
+    def _run_action_on_tab(self, action_label, tab_panel):
+        try:
+            if action_label == "Attack" and hasattr(tab_panel, "attack"):
+                tab_panel.attack(None)
+            elif action_label == "Send" and hasattr(tab_panel, "send_request"):
+                tab_panel.send_request(None)
+            elif action_label == "Access Check" and hasattr(tab_panel, "bac_check"):
+                tab_panel.bac_check(None)
+        except Exception as e:
+            print("Multi-tab run error:", e)
+
 
     def force_layout(self):
         try:

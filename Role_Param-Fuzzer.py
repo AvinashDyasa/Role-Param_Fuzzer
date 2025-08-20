@@ -2050,6 +2050,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.progress.setIndeterminate(False)
 
         right_top.add(self.progress)
+        # Small indicator when Rules were applied on the request
+        self.rules_applied_lbl = JLabel("Ruled")
+        self.rules_applied_lbl.setVisible(False)
+        right_top.add(self.rules_applied_lbl)
         right_top.add(self.status_indicator)
         topbar.add(right_top, BorderLayout.EAST)
 
@@ -2091,8 +2095,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.merge_export_tabs_btn = JButton("Merge Export", actionPerformed=(lambda e: self.parent_extender.mergeExportTabsForImport(e)))
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)
 
-        btn_panel.add(self.export_tabs_btn)
-
         # Rules button (opens Rules dialog)
         self.rules_btn = JButton("Rules")
         def open_rules(evt=None):
@@ -2114,10 +2116,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             except Exception as e:
                 JOptionPane.showMessageDialog(self, "Error opening Rules: " + str(e))
         self.rules_btn.addActionListener(open_rules)
+
+        # Order: Rules, Export Tabs, Merge Export, Import Tabs, Screenshot
         btn_panel.add(self.rules_btn)
+        btn_panel.add(self.export_tabs_btn)
         btn_panel.add(self.merge_export_tabs_btn)
         btn_panel.add(self.import_tabs_btn)
         btn_panel.add(self.screenshot_btn)
+
         right_container = JPanel(BorderLayout())
         right_container.add(btn_panel, BorderLayout.WEST)
 
@@ -3078,6 +3084,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 req_bytes = self.helpers.buildHttpMessage(headers, body)
 
                 # Apply Rules -> Delete Headers
+                rules_applied = False
                 try:
                     cfg_host = service.getHost()
                 except:
@@ -3096,6 +3103,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
                         _s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
                         req_bytes = self.helpers.stringToBytes(_s2)
+                        rules_applied = True
+
 
                 # now send
                 t0 = time.time()
@@ -3105,6 +3114,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
 
                 entry = MessageHistoryEntry(req_bytes, resp_bytes, resp_time_ms=dt_ms, resp_size_bytes=size, kind="send")
+                try:
+                    entry.rules_applied = bool(rules_applied)
+                except:
+                    pass
                 self.history.append(entry)
                 self.current_idx = len(self.history) - 1
                 
@@ -3113,6 +3126,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     # Immediately refresh the status square for this new entry
                     try:
                         self.update_status_indicator_from_entry(self.history[self.current_idx])
+                    except:
+                        pass
+                    # Toggle "Ruled" label if rules were applied
+                    try:
+                        e = self.history[self.current_idx]
+                        self.rules_applied_lbl.setVisible(bool(getattr(e, "rules_applied", False)))
                     except:
                         pass
                     # Defer the resize call to run *after* any UI events from show_entry have completed.
@@ -3242,6 +3261,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
                         entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
                                                     resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
+                        try:
+                            entry.rules_applied = bool(remove_list)
+                        except:
+                            pass
                         entry.highlight = mark
                         history.append(entry)
                         self._tick()
@@ -3353,6 +3376,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 mark = self.find_param_offset(self.helpers.bytesToString(mod_req_bytes), pname, payload)
                                 entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
                                                             resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
+                                try:
+                                    entry.rules_applied = bool(remove_list)
+                                except:
+                                    pass
                                 entry.highlight = mark
                                 history.append(entry)
                                 self._tick()
@@ -3405,6 +3432,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                                         entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=key_path, payload=payload,
                                                                     resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
+                                        try:
+                                            entry.rules_applied = bool(remove_list)
+                                        except:
+                                            pass
 
                                         history.append(entry)
                                         self._tick()
@@ -3423,11 +3454,22 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             self.update_status_indicator_from_entry(self.history[self.current_idx])
                         except:
                             pass
+                        # Toggle "Ruled" label based on the first new entry of this batch
+                        try:
+                            e = self.history[self.current_idx]
+                            self.rules_applied_lbl.setVisible(bool(getattr(e, "rules_applied", False)))
+                        except:
+                            pass
                     else:
                         # Should still update status if no requests were sent
                         self.update_status()
+                        try:
+                            self.rules_applied_lbl.setVisible(False)
+                        except:
+                            pass
                     # Defer the resize call to run *after* any UI events from show_entry/update_status
                     self.resize_sidebar()
+
                 SwingUtilities.invokeLater(do_ui_update)
 
                 if self.save_tabs_state_callback:
@@ -3557,6 +3599,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         resp_size_bytes=size,
                         kind="role"
                     )
+                    try:
+                        entry.rules_applied = bool(remove_list)
+                    except:
+                        pass
+
                     history.append(entry)
 
                     # --- Auto refresh cookies from Set-Cookie (inline; per-role) ---
@@ -3643,9 +3690,20 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             self.update_status_indicator_from_entry(self.history[self.current_idx])
                         except:
                             pass
+                        # Toggle "Ruled" label based on this Access Check result
+                        try:
+                            e = self.history[self.current_idx]
+                            self.rules_applied_lbl.setVisible(bool(getattr(e, "rules_applied", False)))
+                        except:
+                            pass
                     else:
                         self.update_status()
+                        try:
+                            self.rules_applied_lbl.setVisible(False)
+                        except:
+                            pass
                     self.resize_sidebar()
+
 
                 SwingUtilities.invokeLater(do_ui_update)
 

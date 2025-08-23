@@ -15,7 +15,7 @@ from burp import IBurpExtender, ITab, IContextMenuFactory, IMessageEditorControl
 from javax.swing import (
     JPanel, JButton, JLabel, JTabbedPane, JToolBar, JMenuItem, JOptionPane, JSpinner, SpinnerNumberModel, JComboBox, ButtonGroup, JRadioButton,
     SwingUtilities, JFileChooser, JSplitPane, JTable, JScrollPane, JTextField, JCheckBox, DefaultCellEditor, BorderFactory, BoxLayout, Box,
-    SwingConstants, JToggleButton, JPopupMenu, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar, JEditorPane, JDialog
+    SwingConstants, JToggleButton, JPopupMenu, JCheckBoxMenuItem, ImageIcon, ListSelectionModel, JTextArea, JList, UIManager, OverlayLayout, JProgressBar, JEditorPane, JDialog
 )
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
 from java.awt import ( BorderLayout, Dimension, FlowLayout, Color, Cursor, Dimension, Rectangle, Robot, Graphics2D, Graphics, Font, CardLayout,
@@ -1976,7 +1976,15 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.attack_dropdown.setFocusable(False)
         self.attack_dropdown.setToolTipText("Select tabs to Attack")
         self.attack_dropdown.addActionListener(lambda e: self.open_multi_tab_dialog("Attack"))
-        
+
+        # VT (Verb Tamper) button + dropdown
+        self.vt_btn = JButton("VT")
+        self.vt_btn.setToolTipText("verb tamper")
+        self.vt_dropdown = JButton(u"\u25BE")
+        self.vt_dropdown.setPreferredSize(Dimension(20, btn_dim.height))
+        self.vt_dropdown.setFocusable(False)
+        self.vt_dropdown.setToolTipText("Select HTTP verbs for VT")
+
         # Previous dropdown ▼
         self.prev_dropdown = JButton(u"\u25BC")
         self.prev_dropdown.setFocusable(False)
@@ -2046,9 +2054,14 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         attack_grp.add(self.attack_btn)
         attack_grp.add(self.attack_dropdown)
 
+        vt_grp = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        vt_grp.add(self.vt_btn)
+        vt_grp.add(self.vt_dropdown)
+
         button_row.add(access_grp)
         button_row.add(send_grp)
         button_row.add(attack_grp)
+        button_row.add(vt_grp)
         button_row.add(Box.createHorizontalStrut(15))  # spacer
         button_row.add(nav_panel)
         button_row.add(Box.createHorizontalStrut(8))
@@ -2266,6 +2279,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         self.send_btn.addActionListener(self.send_request)
         self.attack_btn.addActionListener(self.attack)
+        self.vt_btn.addActionListener(lambda e: self.verb_tamper(e))
+        self.vt_dropdown.addActionListener(self.open_vt_menu)
         self.prev_btn.addActionListener(self.go_prev)
         self.next_btn.addActionListener(self.go_next)
         self.update_status()
@@ -3161,6 +3176,266 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         return self.req_editor.getMessage()
     def getResponse(self):
         return self.resp_editor.getMessage()
+
+    # ---- VT (Verb Tamper) helpers ----
+    def _get_current_host_for_cfg(self):
+        try:
+            req_bytes = self.req_editor.getMessage()
+            service = self.base_message.getHttpService() if self.base_message is not None else self.guess_service_from_request(req_bytes)
+            host_name = (service.getHost() if service else (getattr(self, "host", "") or "unknown"))
+            return (host_name or "unknown").lower()
+        except:
+            return "unknown"
+
+    def _get_vt_enabled_methods(self):
+        # default: all common methods enabled
+        default_methods = ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"]
+        h = self._get_current_host_for_cfg()
+        cfg = BAC_HOST_CONFIGS.get(h) or {}
+        methods = cfg.get("vt_enabled_methods")
+        if methods is None or not isinstance(methods, list):
+            return list(default_methods)  # default only when unset
+        return list(methods)  # allow empty list (persisted deselection)
+        # sanitize
+        methods = [m for m in methods if isinstance(m, str)]
+        return methods if methods else list(default_methods)
+
+    def _set_vt_enabled_methods(self, methods):
+        h = self._get_current_host_for_cfg()
+        if h not in BAC_HOST_CONFIGS:
+            BAC_HOST_CONFIGS[h] = {}
+        BAC_HOST_CONFIGS[h]["vt_enabled_methods"] = list(methods)
+        try:
+            if self._callbacks is not None:
+                save_bac_configs(self._callbacks)
+        except:
+            pass
+
+    def open_vt_menu(self, event=None):
+        # Build a checkbox dropdown (JPopupMenu) with HTTP methods; persist per-host
+        popup = JPopupMenu()
+        all_methods = ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"]
+        anchor = self.vt_dropdown if hasattr(self, "vt_dropdown") else self.vt_btn
+
+        # helper: re-show popup to keep it open after any click
+        def _reshow():
+            try:
+                SwingUtilities.invokeLater(lambda: popup.show(anchor, 0, anchor.getHeight()))
+            except:
+                pass
+
+        enabled = set(self._get_vt_enabled_methods())
+
+        # Header (disabled label)
+        header = JMenuItem("HTTP methods")
+        header.setEnabled(False)
+        popup.add(header)
+
+        # Add checkbox items that keep the menu open after toggling
+        items = []
+        for m in all_methods:
+            item = JCheckBoxMenuItem(m, m in enabled)
+            def make_listener(method_name, item_ref):
+                def _l(_e=None):
+                    cur = set(self._get_vt_enabled_methods())
+                    if item_ref.isSelected():
+                        cur.add(method_name)
+                    else:
+                        cur.discard(method_name)
+                    self._set_vt_enabled_methods(sorted(cur))
+                    _reshow()  # keep dropdown open
+                return _l
+            item.addActionListener(make_listener(m, item))
+            popup.add(item)
+            items.append(item)
+
+        # Single "Select all" that toggles all on/off
+        popup.addSeparator()
+        sel_all = JMenuItem("Select all (toggle)")
+        def _sel_all(_e=None):
+            # if all selected -> deselect all; else select all
+            cur_enabled = set(self._get_vt_enabled_methods())
+            if len(cur_enabled) == len(all_methods):
+                for it in items: it.setSelected(False)
+                self._set_vt_enabled_methods([])
+            else:
+                for it in items: it.setSelected(True)
+                self._set_vt_enabled_methods(list(all_methods))
+            _reshow()  # keep dropdown open
+        sel_all.addActionListener(_sel_all)
+        popup.add(sel_all)
+
+        # show near ▼ button (or main button fallback)
+        try:
+            popup.show(anchor, 0, anchor.getHeight())
+        except:
+            popup.show(self.vt_btn, 0, self.vt_btn.getHeight())
+
+    def _convert_request_method(self, req_str, new_method):
+        """
+        Use Burp's built‑in toggleRequestMethod() to emulate Repeater's
+        'Change request method' behavior. Then pivot to any target verb:
+        - If target is GET/DELETE/HEAD/OPTIONS: ensure no body (GET‑style).
+        - If target is POST/PUT/PATCH: ensure form body (POST‑style).
+        """
+        try:
+            target = (new_method or "").upper()
+            if not target:
+                return req_str
+
+            # helpers
+            def _first_line_and_method(s):
+                line = s.split("\r\n", 1)[0] if s else ""
+                meth = line.split(" ", 1)[0].upper() if " " in line else ""
+                return line, meth
+
+            def _replace_method_token(s, meth):
+                lines = s.split("\r\n")
+                if not lines:
+                    return s
+                parts = lines[0].split(" ")
+                if len(parts) >= 3:
+                    parts[0] = meth
+                    lines[0] = " ".join(parts)
+                return "\r\n".join(lines)
+
+            # Start from current text -> bytes
+            req_bytes = self.helpers.stringToBytes(req_str)
+            cur_line, cur_method = _first_line_and_method(req_str)
+
+            # Decide which side of Burp's toggle we want as a base:
+            #  - GET-like target => want GET-style (no body, params in URL)
+            #  - POST-like target => want POST-style (form body)
+            GET_LIKE  = ("GET", "DELETE", "HEAD", "OPTIONS")
+            POST_LIKE = ("POST", "PUT", "PATCH")
+
+            # Drive Burp's internal conversion where helpful
+            if target in GET_LIKE:
+                # Ensure GET-style; if not already GET, toggle once
+                if cur_method != "GET":
+                    try:
+                        req_bytes = self.helpers.toggleRequestMethod(req_bytes)
+                    except Exception:
+                        pass
+                s = self.helpers.bytesToString(req_bytes)
+                s = _replace_method_token(s, target)
+                # Drop Content-Length/Type since body is gone (toggle usually handles this, we enforce)
+                hdr, body = (s.split("\r\n\r\n", 1) + [""])[:2]
+                lines = hdr.split("\r\n")
+                new_hdrs = [lines[0]] + [h for h in lines[1:]
+                                        if not h.lower().startswith("content-length:")
+                                        and not h.lower().startswith("content-type:")]
+                return "\r\n".join(new_hdrs) + "\r\n\r\n"
+            else:
+                # POST-like: ensure body form style; if we are GET/DELETE/etc., toggle to POST first
+                if cur_method in GET_LIKE:
+                    try:
+                        req_bytes = self.helpers.toggleRequestMethod(req_bytes)  # moves query -> body, sets form CT
+                    except Exception:
+                        pass
+                s = self.helpers.bytesToString(req_bytes)
+                s = _replace_method_token(s, target)  # POST -> PUT/PATCH if needed
+                return s
+        except Exception:
+            return req_str
+
+
+    def verb_tamper(self, event):
+        """
+        Runs VT over the currently loaded request for each enabled method.
+        Sends each variant and records in history (kind='vt').
+        Progress bar behaves like Access Check/Attack.
+        """
+        if self._run_in_flight:
+            return
+        enabled_methods = self._get_vt_enabled_methods()
+        if not enabled_methods:
+            try:
+                JOptionPane.showMessageDialog(self, "No HTTP methods selected in VT menu.")
+            except:
+                pass
+            return
+
+        def worker():
+            try:
+                req_bytes = self.req_editor.getMessage()
+                req_str = self.helpers.bytesToString(req_bytes)
+
+                if self.base_message is not None:
+                    service = self.base_message.getHttpService()
+                else:
+                    service = self.guess_service_from_request(req_bytes)
+                    if not service:
+                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self,
+                            "No HTTP service found.\nUse context menu 'Send to' from a real request, or paste a valid request including Host: header."))
+                        return
+
+                # Prime progress UI
+                if not self._begin_run(len(enabled_methods), label="VT"):
+                    return
+
+                for m in enabled_methods:
+                    # convert
+                    vt_req_str = self._convert_request_method(req_str, m)
+                    vt_req_bytes = self.helpers.stringToBytes(vt_req_str)
+
+                    # Rebuild for correct Content-Length
+                    analyzed = self.helpers.analyzeRequest(service, vt_req_bytes)
+                    headers = list(analyzed.getHeaders())
+                    body_offset = analyzed.getBodyOffset()
+                    body = vt_req_bytes[body_offset:]
+                    headers = [h for h in headers if not h.lower().startswith("content-length")]
+                    headers.append("Content-Length: %d" % len(body))
+                    vt_req_bytes = self.helpers.buildHttpMessage(headers, body)
+
+                    # Apply per-host Rules (remove headers) if configured
+                    try:
+                        cfg = resolve_host_cfg((service.getHost() if service else (getattr(self, "host", "") or "")))
+                        remove_list = (cfg.get("remove_headers") or []) if isinstance(cfg, dict) else []
+                        if remove_list:
+                            s = self.helpers.bytesToString(vt_req_bytes)
+                            _hdrs, _bp = (s.split("\r\n\r\n", 1) + [""])[:2]
+                            _lines = _hdrs.split("\r\n")
+                            _reqline = _lines[0]
+                            _newh = [h for h in _lines[1:] if not any(h.lower().startswith(rh.lower()+":") for rh in remove_list)]
+                            s2 = "\r\n".join([_reqline] + _newh) + "\r\n\r\n" + _bp
+                            vt_req_bytes = self.helpers.stringToBytes(s2)
+                    except:
+                        pass
+
+                    # send
+                    t0 = time.time()
+                    cb = getattr(self, "_callbacks", None) or getattr(self, "callbacks", None)
+                    if cb is None:
+                        raise RuntimeError("Burp callbacks not available")
+                    resp = cb.makeHttpRequest(service, vt_req_bytes)
+                    dt_ms = int(round((time.time() - t0) * 1000))
+                    resp_bytes = resp.getResponse()
+                    size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
+
+                    entry = MessageHistoryEntry(vt_req_bytes, resp_bytes, resp_time_ms=dt_ms, resp_size_bytes=size, kind="vt")
+                    self.history.append(entry)
+                    self.current_idx = len(self.history) - 1
+
+                    self._tick()
+
+                def ui_done():
+                    self.show_entry(self.current_idx)
+                    self.update_status()
+                SwingUtilities.invokeLater(ui_done)
+            except Exception as ex:
+                traceback.print_exc()
+                try:
+                    SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "VT error: " + str(ex)))
+                except:
+                    pass
+            finally:
+                self._end_run()
+
+        # run in background thread (like Attack/Access Check)
+        from threading import Thread
+        Thread(target=worker).start()
+
 
     def send_request(self, event):
         def worker():
@@ -4179,28 +4454,57 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         popup.show(btn, 0, btn.getHeight())
 
     def summarize_entry(self, entry):
-        # Prefer human-friendly labels based on what kind of action it was
+        # Human‑friendly history titles + response codes
         try:
-            # ATTACK: show "param = value"
+            # --- status code (if any)
+            code = None
+            try:
+                if entry and entry.resp_bytes is not None:
+                    info = self.helpers.analyzeResponse(entry.resp_bytes)
+                    code = info.getStatusCode()
+            except:
+                code = None
+
+            # --- VT: "METHOD /path"
+            if getattr(entry, "kind", None) == "vt":
+                try:
+                    s = self.helpers.bytesToString(entry.req_bytes)
+                    req_line = s.split("\r\n", 1)[0]
+                    parts = req_line.split(" ")
+                    if len(parts) >= 3:
+                        method = parts[0]
+                        path = " ".join(parts[1:-1])
+                        label = u"%s %s" % (method, path)
+                    else:
+                        # fallback to URL path
+                        analyzed = self.helpers.analyzeRequest(self.getHttpService(), entry.req_bytes)
+                        u = analyzed.getUrl()
+                        label = u.getProtocol().upper() + " " + u.getPath()
+                except:
+                    label = "(invalid request)"
+                return (label + (u" | %d" % code) if code is not None else label)
+
+            # --- ATTACK: "param = value"
             if getattr(entry, "kind", None) == "attack" and entry.param_name:
-                val = entry.payload if entry.payload is not None else ""
-                # keep labels short
-                if isinstance(val, str):
+                val = entry.payload if entry.payload is not None else u""
+                if isinstance(val, basestring):
                     if len(val) > 80:
-                        val = val[:77] + "..."
-                return u"%s = %s" % (entry.param_name, val)
+                        val = val[:77] + u"."
+                label = u"%s = %s" % (entry.param_name, val)
+                return (label + (u" | %d" % code) if code is not None else label)
 
-            # ROLE/BAC: show "Role: <role tab name>"
+            # --- ROLE/BAC: "Role: <role>"
             if getattr(entry, "kind", None) == "role":
-                label = entry.param_name or "Role"
-                return u"Role: %s" % label
+                label = entry.param_name or u"Role"
+                label = u"Role: %s" % label
+                return (label + (u" | %d" % code) if code is not None else label)
 
-            # SEND (or unknown): show API URL like Repeater
+            # --- SEND / unknown: show full URL like Repeater
             analyzed = self.helpers.analyzeRequest(self.getHttpService(), entry.req_bytes)
             url = analyzed.getUrl().toString()
-            return url
+            return (url + (u" | %d" % code) if code is not None else url)
         except:
-            return "(invalid)"
+            return u"(invalid)"
 
 
     def jump_to_history(self, idx):

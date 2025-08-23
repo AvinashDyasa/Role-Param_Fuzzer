@@ -39,6 +39,60 @@ LAST_BAC_ROLE_DIR_KEY = "last-bac-role-directory"
 LAST_PAYLOAD_STATE = {}
 ARCHIVED_KEY = "archived_roles"
 
+def _apply_cookie_modify(existing_cookie, modify_pairs_raw, add_missing=False):
+    """
+    Modify only the provided cookie keys, keep others untouched and in order.
+    existing_cookie: e.g. "a=1; b=2; c=3"
+    modify_pairs_raw: e.g. "a=9; c=33"
+    """
+    def _parse_cookie(s):
+        out = []
+        for part in s.split(";"):
+            kv = part.strip()
+            if not kv:
+                continue
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                out.append([k.strip(), v.strip()])
+            else:
+                # flag-like cookie; keep as-is
+                out.append([kv.strip(), None])
+        return out
+
+    def _to_map(pairs):
+        m = {}
+        for k, v in pairs:
+            if k:
+                m[k] = v
+        return m
+
+    base_pairs = _parse_cookie(existing_cookie or "")
+    mods_pairs = _parse_cookie(modify_pairs_raw or "")
+    mods = _to_map(mods_pairs)
+
+    # apply modifications preserving original order
+    seen = set()
+    for i in range(len(base_pairs)):
+        k, v = base_pairs[i]
+        if k in mods:
+            base_pairs[i][1] = mods[k]
+            seen.add(k)
+
+    # if some mod keys weren’t present, append them at the end
+    if add_missing:
+        for k, v in mods.items():
+            if k not in seen:
+                base_pairs.append([k, v])
+
+    # re-serialize
+    out_parts = []
+    for k, v in base_pairs:
+        if v is None:
+            out_parts.append(k)
+        else:
+            out_parts.append("%s=%s" % (k, v))
+    return "; ".join(out_parts)
+
 def extract_json_keys_recursive(data, path="", keys=None):
     if keys is None:
         keys = []
@@ -1561,13 +1615,26 @@ class BACCheckPanel(JPanel):
             gbc.gridx = 0
             gbc.gridy = 0
             gbc.weightx = 0.0
-            header_label = JLabel("Header:")
-            header_label.setFont(default_font)
-            row.add(header_label, gbc)
+            # Action dropdown (Replace/Delete) + Header label inline
+            mode_combo = JComboBox(["Replace", "Modify", "Delete"])
+            mode_combo.setPreferredSize(Dimension(90, 24))
+            mode_combo.setMinimumSize(Dimension(90, 24))
+            mode_combo.setFont(default_font)
+            if header_val and "mode" in header_val and header_val["mode"]:
+                mode_combo.setSelectedItem(header_val["mode"])
+            else:
+                mode_combo.setSelectedItem("Replace")
+
+            action_and_label = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0))
+            action_and_label.add(mode_combo)
+            action_and_label.add(JLabel("Header:"))
+            row.add(action_and_label, gbc)
 
             gbc.gridx = 1
             gbc.weightx = 0.7
             available_headers = list(self.req_headers)
+            combo = JComboBox(available_headers)
+
             combo = JComboBox(available_headers)
             combo.setEditable(True)
             combo.setPreferredSize(Dimension(180, 24))
@@ -1745,6 +1812,20 @@ class BACCheckPanel(JPanel):
             combo.addActionListener(on_combo_change)
             val_field.addCaretListener(lambda evt: on_val_change())
 
+            def on_mode_change(evt=None):
+                idx = None
+                for i, (p, _, _) in enumerate(header_rows):
+                    if p == row:
+                        idx = i
+                        break
+                if idx is not None:
+                    role_cfg["headers"][idx]["mode"] = str(mode_combo.getSelectedItem())
+                if self.on_save_callback:
+                    self.on_save_callback(self.host)
+
+            mode_combo.addActionListener(lambda evt: on_mode_change())
+
+
             class EnterKeyListener(KeyAdapter):
                 def keyPressed(self, event):
                     if event.getKeyCode() == KeyEvent.VK_ENTER:
@@ -1777,7 +1858,15 @@ class BACCheckPanel(JPanel):
             headers_container.add(row)
             header_rows.append((row, combo, val_field))
             if header_val is None:
-                role_cfg["headers"].append({"header": str(combo.getSelectedItem()), "value": val_field.getText()})
+                role_cfg["headers"].append({
+                    "header": str(combo.getSelectedItem()),
+                    "value": val_field.getText(),
+                    "mode": str(mode_combo.getSelectedItem() or "Replace")
+                })
+            else:
+                # ensure older snapshots get a default
+                header_val.setdefault("mode", "Replace")
+
             headers_container.revalidate()
             headers_container.repaint()
 
@@ -3898,7 +3987,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                     # Build map of headers to override
                     role_headers = {
-                        h['header'].strip().lower(): h['value']
+                        h['header'].strip().lower(): {
+                            "mode": (h.get("mode") or "Replace").lower(),
+                            "value": h.get("value", "")
+                        }
                         for h in role.get('headers', []) if h.get('header')
                     }
 
@@ -3915,18 +4007,46 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             hname_stripped = hname.strip()
                             hname_lc = hname_stripped.lower()
                             if hname_lc in role_headers:
-                                changed_headers.append("%s: %s" % (hname_stripped, role_headers[hname_lc]))
-                                used_headers.add(hname_lc)
+                                rule = role_headers[hname_lc]
+                                mode = rule.get("mode", "replace")
+                                rvalue = rule.get("value", "")
+                                if mode == "delete":
+                                    # delete if no value provided OR value matches existing
+                                    existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
+                                    if (not rvalue) or (existing_val == rvalue):
+                                        used_headers.add(hname_lc)
+                                        # skip (delete)
+                                        continue
+                                    else:
+                                        # value mismatch -> keep original
+                                        unchanged_headers.append(h)
+                                elif mode == "modify":
+                                    existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
+                                    if hname_lc == "cookie":
+                                        new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
+                                        changed_headers.append("%s: %s" % (hname_stripped, new_val))
+                                        used_headers.add(hname_lc)
+                                    else:
+                                        # fallback: behave like Replace for non-Cookie headers
+                                        changed_headers.append("%s: %s" % (hname_stripped, rvalue))
+                                        used_headers.add(hname_lc)
+                                else:
+                                    # replace
+                                    changed_headers.append("%s: %s" % (hname_stripped, rvalue))
+                                    used_headers.add(hname_lc)
                             else:
                                 unchanged_headers.append(h)
+
                         else:
                             unchanged_headers.append(h)
 
                     # Add any new headers from role not originally present (only if Force is enabled)
                     if role.get("force", False):
-                        for hname_lc, hval in role_headers.items():
+                        for hname_lc, rule in role_headers.items():
+                            if rule.get("mode", "replace") == "delete":
+                                continue  # never add a header that is set to delete
                             if hname_lc not in used_headers:
-                                changed_headers.append("%s: %s" % (hname_lc, hval))
+                                changed_headers.append("%s: %s" % (hname_lc, rule.get("value", "")))
 
                     # Add extra header after changed ones
                     if role.get('extra_enabled') and role.get('extra_name'):
@@ -4126,7 +4246,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 role = self.bac_panel.role_data[role_idx]
                 # Build header map to override
                 role_headers = {
-                    h['header'].strip().lower(): h['value']
+                    h['header'].strip().lower(): {
+                        "mode": (h.get("mode") or "Replace").lower(),
+                        "value": h.get("value", "")
+                    }
                     for h in role.get('headers', []) if h.get('header')
                 }
 
@@ -4140,18 +4263,44 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         hn_stripped = hn.strip()
                         hn_lc = hn_stripped.lower()
                         if hn_lc in role_headers:
-                            changed_headers.append("%s: %s" % (hn_stripped, role_headers[hn_lc]))
-                            used.add(hn_lc)
+                            rule = role_headers[hn_lc]
+                            mode = rule.get("mode", "replace")
+                            rvalue = rule.get("value", "")
+                            if mode == "delete":
+                                existing_val = hv.strip()
+                                if (not rvalue) or (existing_val == rvalue):
+                                    used.add(hn_lc)
+                                    # skip (delete)
+                                    continue
+                                else:
+                                    unchanged_headers.append(h)
+                            elif mode == "modify":
+                                existing_val = hv.strip()
+                                if hn_lc == "cookie":
+                                    new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
+                                    changed_headers.append("%s: %s" % (hn_stripped, new_val))
+                                    used.add(hn_lc)
+                                else:
+                                    # fallback: behave like Replace for non-Cookie headers
+                                    changed_headers.append("%s: %s" % (hn_stripped, rvalue))
+                                    used.add(hn_lc)
+                            else:
+                                # replace
+                                changed_headers.append("%s: %s" % (hn_stripped, rvalue))
+                                used.add(hn_lc)
                         else:
                             unchanged_headers.append(h)
+
                     else:
                         unchanged_headers.append(h)
 
                 # Add headers present only in role (only if Force is enabled)
                 if role.get("force", False):
-                    for hn_lc, hval in role_headers.items():
+                    for hn_lc, rule in role_headers.items():
+                        if rule.get("mode", "replace") == "delete":
+                            continue  # skip adding headers marked for delete
                         if hn_lc not in used:
-                            changed_headers.append("%s: %s" % (hn_lc, hval))
+                            changed_headers.append("%s: %s" % (hn_lc, rule.get("value", "")))
 
                 # Extra header support
                 if role.get('extra_enabled') and role.get('extra_name'):

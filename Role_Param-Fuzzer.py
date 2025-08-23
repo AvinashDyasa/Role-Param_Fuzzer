@@ -3479,7 +3479,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                     # Apply per-host Rules (remove headers) if configured
                     try:
-                        cfg = resolve_host_cfg((service.getHost() if service else (getattr(self, "host", "") or "")))
+                        cfg = get_bac_host_config((service.getHost() if service else (getattr(self, "host", "") or "")))
                         remove_list = (cfg.get("remove_headers") or []) if isinstance(cfg, dict) else []
                         if remove_list:
                             s = self.helpers.bytesToString(vt_req_bytes)
@@ -5236,15 +5236,26 @@ class RulesDialog(JDialog):
                 if val:
                     headers.append(val)
         h = (self.host or "").lower()
-        if h not in BAC_HOST_CONFIGS:
-            BAC_HOST_CONFIGS[h] = {}
-        BAC_HOST_CONFIGS[h]["remove_headers"] = headers
+
+        if headers:
+            if h not in BAC_HOST_CONFIGS:
+                BAC_HOST_CONFIGS[h] = {}
+            BAC_HOST_CONFIGS[h]["remove_headers"] = headers
+            msg = "Saved %d header rule(s)" % len(headers)
+        else:
+            # No headers selected => clear persisted rule entirely
+            if h in BAC_HOST_CONFIGS and "remove_headers" in BAC_HOST_CONFIGS[h]:
+                del BAC_HOST_CONFIGS[h]["remove_headers"]
+            if h in BAC_HOST_CONFIGS and not BAC_HOST_CONFIGS[h]:
+                del BAC_HOST_CONFIGS[h]
+            msg = "No header rules for this host (cleared)."
+
         try:
             if self._callbacks is not None:
                 save_bac_configs(self._callbacks)
         except:
             pass
-        JOptionPane.showMessageDialog(self, "Saved %d header rule(s)" % len(headers))
+        JOptionPane.showMessageDialog(self, msg)
         self.dispose()
 
 # ---------- Main BurpExtender ----------

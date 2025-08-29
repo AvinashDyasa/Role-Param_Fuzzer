@@ -4211,6 +4211,16 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                             new_cookie_str = _merge_cookie_values_only(old_cookie_str, allowed)
                                             if new_cookie_str != old_cookie_str:
                                                 headers_list[cookie_idx]["value"] = new_cookie_str
+                                                # mark refreshed on current/history entry if available
+                                                try:
+                                                    entry.cookie_refreshed = True
+                                                except:
+                                                    pass
+                                                try:
+                                                    cur = self.history[self.current_idx]
+                                                    cur.cookie_refreshed = True
+                                                except:
+                                                    pass
                                                 any_cookie_updated = True
                     except Exception:
                         pass
@@ -4462,6 +4472,16 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                         new_cookie_str = _merge_cookie_values_only(old_cookie_str, allowed)
                                         if new_cookie_str != old_cookie_str:
                                             headers_list[cookie_idx]["value"] = new_cookie_str
+                                            # mark refreshed on current/history entry if available
+                                            try:
+                                                entry.cookie_refreshed = True
+                                            except:
+                                                pass
+                                            try:
+                                                cur = self.history[self.current_idx]
+                                                cur.cookie_refreshed = True
+                                            except:
+                                                pass
                                             # Persist + refresh BAC UI if available
                                             try:
                                                 if hasattr(self, "bac_panel") and self.bac_panel:
@@ -4698,7 +4718,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             if getattr(entry, "kind", None) == "role":
                 label = entry.param_name or u"Role"
                 label = u"Role: %s" % label
-                return (label + (u" | %d" % code) if code is not None else label)
+                label = (label + (u" | %d" % code) if code is not None else label)
+                if getattr(entry, "cookie_refreshed", False):
+                    label = label + u" | refreshed"
+                return label
 
             # --- SEND / unknown: show full URL like Repeater
             analyzed = self.helpers.analyzeRequest(self.getHttpService(), entry.req_bytes)

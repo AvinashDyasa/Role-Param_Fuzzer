@@ -41,9 +41,15 @@ ARCHIVED_KEY = "archived_roles"
 
 def _apply_cookie_modify(existing_cookie, modify_pairs_raw, add_missing=False):
     """
-    Modify only the provided cookie keys, keep others untouched and in order.
-    existing_cookie: e.g. "a=1; b=2; c=3"
-    modify_pairs_raw: e.g. "a=9; c=33"
+    Modify and/or delete specific cookies while preserving order.
+
+    Syntax in modify_pairs_raw:
+      - Set:   "c=33"                  -> set/overwrite c's value
+      - Delete:"-e"                    -> remove cookie 'e' if present
+      - Cond. Delete: "-e=5"           -> remove cookie 'e' only if its current value is '5'
+      - Multiple: "c=33; -e; -x=abc"   -> combine ops (order doesn't matter)
+
+    existing_cookie: e.g. "a=1; b=2; c=3; d=4; e=5"
     """
     def _parse_cookie(s):
         out = []
@@ -67,31 +73,57 @@ def _apply_cookie_modify(existing_cookie, modify_pairs_raw, add_missing=False):
         return m
 
     base_pairs = _parse_cookie(existing_cookie or "")
-    mods_pairs = _parse_cookie(modify_pairs_raw or "")
-    mods = _to_map(mods_pairs)
 
-    # apply modifications preserving original order
-    seen = set()
-    for i in range(len(base_pairs)):
-        k, v = base_pairs[i]
-        if k in mods:
-            base_pairs[i][1] = mods[k]
-            seen.add(k)
-
-    # if some mod keys weren’t present, append them at the end
-    if add_missing:
-        for k, v in mods.items():
-            if k not in seen:
-                base_pairs.append([k, v])
-
-    # re-serialize
-    out_parts = []
-    for k, v in base_pairs:
-        if v is None:
-            out_parts.append(k)
+    # Split directives into set-mods and delete rules
+    raw_pairs = _parse_cookie(modify_pairs_raw or "")
+    set_pairs = []
+    delete_rules = {}  # name -> None (unconditional) or value string (conditional)
+    for k, v in raw_pairs:
+        if k.startswith("-"):
+            name = k[1:].strip()
+            if not name:
+                continue
+            delete_rules[name] = v  # v may be None (means unconditional), or a string for equality-match
         else:
-            out_parts.append("%s=%s" % (k, v))
-    return "; ".join(out_parts)
+            set_pairs.append([k, v])
+
+    set_map = _to_map(set_pairs)
+
+    # Apply: iterate once to handle deletes and sets in-place
+    out_pairs = []
+    seen = set()
+    for (k, v) in base_pairs:
+        # Deletion?
+        if k in delete_rules:
+            cond_val = delete_rules[k]
+            if cond_val is None:
+                # unconditional remove
+                continue
+            else:
+                # remove only if current value matches
+                if (v is None and cond_val == "") or (v is not None and v == cond_val):
+                    continue
+        # Set/modify?
+        if k in set_map:
+            v = set_map[k]
+            seen.add(k)
+        out_pairs.append([k, v])
+
+    # Append any set keys that weren't present originally
+    if add_missing:
+        for k, v in set_map.items():
+            if k not in seen:
+                out_pairs.append([k, v])
+
+    # Re-serialize
+    parts = []
+    for k, v in out_pairs:
+        if v is None:
+            parts.append(k)
+        else:
+            parts.append("%s=%s" % (k, v))
+    return "; ".join(parts)
+
 
 def extract_json_keys_recursive(data, path="", keys=None):
     if keys is None:

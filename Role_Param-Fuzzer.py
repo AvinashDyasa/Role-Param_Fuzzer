@@ -3450,14 +3450,18 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 req_bytes = self.req_editor.getMessage()
                 req_str = self.helpers.bytesToString(req_bytes)
 
-                if self.base_message is not None:
-                    service = self.base_message.getHttpService()
-                else:
+                service = None
+                try:
+                    if self.base_message is not None:
+                        service = self.base_message.getHttpService()
+                except:
+                    service = None
+                if service is None:
                     service = self.guess_service_from_request(req_bytes)
-                    if not service:
-                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self,
-                            "No HTTP service found.\nUse context menu 'Send to' from a real request, or paste a valid request including Host: header."))
-                        return
+                if not service:
+                    SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self,
+                        "No HTTP service found.\nUse context menu 'Send to' from a real request, or paste a valid request including Host: header."))
+                    return
 
                 # Prime progress UI
                 if not self._begin_run(len(enabled_methods), label="VT"):
@@ -3621,13 +3625,18 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             try:
                 req_bytes = self.req_editor.getMessage()
                 req_str = self.helpers.bytesToString(req_bytes)
-                if self.base_message is not None:
-                    service = self.base_message.getHttpService()
-                else:
+                service = None
+                try:
+                    if self.base_message is not None:
+                        service = self.base_message.getHttpService()
+                except:
+                    service = None
+                if service is None:
                     service = self.guess_service_from_request(req_bytes)
-                    if not service:
-                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
-                        return
+                if not service:
+                    SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self,
+                        "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
+                    return
                 # ─── NEW: rebuild the request so Content-Length is correct ───
                 analyzed = self.helpers.analyzeRequest(service, req_bytes)
                 headers = list(analyzed.getHeaders())
@@ -3953,7 +3962,18 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             try:
                 req_bytes = self.req_editor.getMessage()
                 req_str = self.helpers.bytesToString(req_bytes)
-                service = self.base_message.getHttpService() if self.base_message else self.guess_service_from_request(req_bytes)
+                service = None
+                try:
+                    if self.base_message:
+                        service = self.base_message.getHttpService()
+                except:
+                    service = None
+                if service is None:
+                    service = self.guess_service_from_request(req_bytes)
+                if not service:
+                    SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self,
+                        "No HTTP service found.\nUse context menu to send a real request, or paste a valid request including Host: header."))
+                    return
 
                 # Rebuild request for accurate Content-Length
                 analyzed = self.helpers.analyzeRequest(service, req_bytes)

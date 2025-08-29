@@ -1518,7 +1518,7 @@ class BACCheckPanel(JPanel):
             "extra_name": "",
             "extra_value": "",
             "force": False,
-            "auto_refresh": True
+            "auto_refresh": False
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         # Insert at plus_idx (which is at end, since only "+" at this point on init)
@@ -1542,7 +1542,7 @@ class BACCheckPanel(JPanel):
             "extra_name": "",
             "extra_value": "",
             "force": False,
-            "auto_refresh": True
+            "auto_refresh": False
         }
         panel = self.make_role_panel(role_cfg, len(self.role_data))
         self.role_tabs.insertTab(role_label, None, panel, None, plus_idx)
@@ -1585,7 +1585,7 @@ class BACCheckPanel(JPanel):
         options_row = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
         auto_refresh_cb = JCheckBox(
             "Auto refresh cookies (Set-Cookie > Cookie)",
-            bool(role_cfg.get("auto_refresh", True))
+            bool(role_cfg.get("auto_refresh", False))
         )
         def _on_auto_refresh(evt=None):
             role_cfg["auto_refresh"] = bool(auto_refresh_cb.isSelected())

@@ -2293,7 +2293,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
         main_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, self.req_editor.getComponent(), self.resp_editor.getComponent())
         main_split.setResizeWeight(0.5)
-        main_split.setDividerLocation(400)
+        main_split.setDividerLocation(0.5)  # 50/50
         main_split.setOneTouchExpandable(True)
         self.main_split = main_split
 
@@ -2352,7 +2352,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.tab_button_panel = JPanel()
         self.tab_button_panel.setLayout(BoxLayout(self.tab_button_panel, BoxLayout.Y_AXIS))
 
-        self.sidebar_width_expanded = 400
+        self.sidebar_width_expanded = 500
         self.sidebar_width_collapsed = 36
 
         def on_tab_click(tab_name):
@@ -2372,6 +2372,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.bac_btn.set_selected(self.current_tab == "Role Probe" and not self.tab_collapsed)
             self.right_panel.revalidate()
             self.resize_sidebar()
+            SwingUtilities.invokeLater(lambda: self.force_layout())
                     
         self.inspector_btn = StackedVerticalTabButton("Param Probe", selected=True, on_click=lambda: on_tab_click("Param Probe"))
         self.bac_btn = StackedVerticalTabButton("Role Probe", selected=False, on_click=lambda: on_tab_click("Role Probe"))
@@ -2391,6 +2392,9 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.outer_split.setOneTouchExpandable(True)
         self.outer_split.setResizeWeight(1.0)
         self.add(self.outer_split, BorderLayout.CENTER)
+        SwingUtilities.invokeLater(lambda: self.resize_sidebar())
+        # keep request/response at 50/50 after the UI lays out (and when sidebar width changes)
+        SwingUtilities.invokeLater(lambda: self.main_split.setDividerLocation(0.5))
 
         self.history = []
         self.current_idx = -1

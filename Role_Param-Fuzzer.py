@@ -2159,8 +2159,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.history_title.setBorder(UIManager.getBorder("TextField.border"))
         except:
             pass
-        self.history_title.setMaximumSize(Dimension(600, 26))
-        self.history_title.setMinimumSize(Dimension(260, 26))
+        self.history_title.setMinimumSize(Dimension(120, 26))
+        self.history_title.setMaximumSize(Dimension(100000, 26))
+        # self.history_title.setMaximumSize(Dimension(600, 26))
+        # self.history_title.setMinimumSize(Dimension(260, 26))
 
         button_row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
         access_grp = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
@@ -2185,14 +2187,25 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         button_row.add(vt_grp)
         button_row.add(Box.createHorizontalStrut(15))  # spacer
         button_row.add(nav_panel)
+        # to make the history title small
+        # button_row.add(Box.createHorizontalStrut(8))
+        # button_row.add(self.history_title)
+        # toolbar.add(button_row)
+        # # Wrap toolbar (left) + status square (right)
+        # self.status_indicator = StatusIndicator(20)  # default enabled
+
+        # topbar = JPanel(BorderLayout())
+        # topbar.add(toolbar, BorderLayout.WEST)
         button_row.add(Box.createHorizontalStrut(8))
-        button_row.add(self.history_title)
-        toolbar.add(button_row)
-        # Wrap toolbar (left) + status square (right)
+        # put controls at WEST and summary field at CENTER so it can expand
+        toolbar.setLayout(BorderLayout())
+        toolbar.add(button_row, BorderLayout.WEST)
+        toolbar.add(self.history_title, BorderLayout.CENTER)
+        # Wrap toolbar (center) + status square (right)
         self.status_indicator = StatusIndicator(20)  # default enabled
 
         topbar = JPanel(BorderLayout())
-        topbar.add(toolbar, BorderLayout.WEST)
+        topbar.add(toolbar, BorderLayout.CENTER)
 
         right_top = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
         # --- Progress UI + run guard ---

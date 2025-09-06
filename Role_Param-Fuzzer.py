@@ -2252,7 +2252,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)
 
         # Rules button (opens Rules dialog)
-        self.rules_btn = JButton("Rules")
+        self.rules_btn = JButton("Settings")
         def open_rules(evt=None):
             try:
                 # detect host + available headers from current request/editor
@@ -2270,7 +2270,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 host_name = (service.getHost() if service else (getattr(self, "host", "") or "unknown")).lower()
                 RulesDialog(self, host_name, headers_list, self.callbacks)
             except Exception as e:
-                JOptionPane.showMessageDialog(self, "Error opening Rules: " + str(e))
+                JOptionPane.showMessageDialog(self, "Error opening Settings: " + str(e))
         self.rules_btn.addActionListener(open_rules)
 
         # Order: Rules, Export Tabs, Merge Export, Import Tabs, Screenshot
@@ -3537,6 +3537,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     cb = getattr(self, "_callbacks", None) or getattr(self, "callbacks", None)
                     if cb is None:
                         raise RuntimeError("Burp callbacks not available")
+                    apply_delay_if_needed(service, "vt")
                     resp = cb.makeHttpRequest(service, vt_req_bytes)
                     dt_ms = int(round((time.time() - t0) * 1000))
                     resp_bytes = resp.getResponse()
@@ -3614,6 +3615,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                 # now send
                 t0 = time.time()
+                apply_delay_if_needed(service, "send")
                 resp = self.callbacks.makeHttpRequest(service, req_bytes)
                 dt_ms = int(round((time.time() - t0) * 1000))
                 resp_bytes = resp.getResponse()
@@ -3763,6 +3765,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                         t0 = time.time()
+                        apply_delay_if_needed(service, "attack")
                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                         dt_ms = int(round((time.time() - t0) * 1000))
@@ -3878,6 +3881,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                     mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                                 t0 = time.time()
+                                apply_delay_if_needed(service, "attack")
                                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                                 dt_ms = int(round((time.time() - t0) * 1000))
@@ -3935,6 +3939,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                             mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                                         t0 = time.time()
+                                        apply_delay_if_needed(service, "attack")
                                         resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                                         dt_ms = int(round((time.time() - t0) * 1000))
@@ -4137,6 +4142,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                     t0 = time.time()
+                    apply_delay_if_needed(service, "attack")
                     resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                     dt_ms = int(round((time.time() - t0) * 1000))
@@ -4401,6 +4407,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                 t0 = time.time()
+                apply_delay_if_needed(service, "attack")
                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                 dt_ms = int(round((time.time() - t0) * 1000))
@@ -5245,11 +5252,28 @@ def get_bac_host_config(host):
             return cfg
     return {}
 
+def get_delay_ms_for(service, kind):
+    try:
+        h = (service.getHost() if service else "").lower()
+        conf = BAC_HOST_CONFIGS.get(h, {}).get("delay", {})
+        ms = int(conf.get("ms", 0) or 0)
+        types = set([t.lower() for t in (conf.get("types") or [])])
+        key = {"send": "access", "attack": "attack", "vt": "vt"}.get((kind or "").lower(), (kind or "").lower())
+        if ms > 0 and (not types or key in types):
+            return ms
+    except:
+        pass
+    return 0
+
+def apply_delay_if_needed(service, kind):
+    ms = get_delay_ms_for(service, kind)
+    if ms and ms > 0:
+        time.sleep(ms / 1000.0)
 # ---------- Rules Dialog ----------
 class RulesDialog(JDialog):
     def __init__(self, parent, host, available_headers, callbacks):
         JDialog.__init__(self)
-        self.setTitle("Rules for %s" % host)
+        self.setTitle("Settings for %s" % host)
         self.setModal(True)
         self.setLayout(BorderLayout())
         self.setMinimumSize(Dimension(520, 420))
@@ -5260,6 +5284,7 @@ class RulesDialog(JDialog):
 
         tabs = JTabbedPane()
         tabs.addTab("Delete Headers", self.build_delete_headers_tab())
+        tabs.addTab("Delay", self.build_delay_tab())
         self.add(tabs, BorderLayout.CENTER)
 
         self.setLocationRelativeTo(parent)
@@ -5288,6 +5313,91 @@ class RulesDialog(JDialog):
         panel.add(JScrollPane(self.rows_panel), BorderLayout.CENTER)
         panel.add(ctrl, BorderLayout.SOUTH)
         return panel
+
+    def build_delay_tab(self):
+        panel = JPanel(BorderLayout())
+
+        # Load existing settings
+        conf = BAC_HOST_CONFIGS.get(self.host, {}).get("delay", {})
+        try:
+            ms_val = int(conf.get("ms", 0) or 0)
+        except:
+            ms_val = 0
+        types = set([t.lower() for t in (conf.get("types") or [])])
+
+        inner = JPanel()
+        inner.setLayout(BoxLayout(inner, BoxLayout.Y_AXIS))
+
+        # Checkboxes row
+        cbs = JPanel(FlowLayout(FlowLayout.LEFT))
+        toggle_all = JCheckBox("Toggle all")
+        attack_cb = JCheckBox("Attack")
+        access_cb = JCheckBox("Access check")
+        vt_cb = JCheckBox("VT")
+
+        # Initial state
+        attack_cb.setSelected("attack" in types)
+        access_cb.setSelected("access" in types or "send" in types)
+        vt_cb.setSelected("vt" in types)
+        toggle_all.setSelected(attack_cb.isSelected() and access_cb.isSelected() and vt_cb.isSelected())
+
+        def on_toggle_all(evt):
+            sel = toggle_all.isSelected()
+            attack_cb.setSelected(sel)
+            access_cb.setSelected(sel)
+            vt_cb.setSelected(sel)
+        toggle_all.addActionListener(on_toggle_all)
+
+        cbs.add(toggle_all); cbs.add(attack_cb); cbs.add(access_cb); cbs.add(vt_cb)
+
+        # Milliseconds input
+        ms_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        ms_label = JLabel("Delay (milliseconds):")
+        ms_field = JTextField(str(ms_val), 8)
+        ms_panel.add(ms_label); ms_panel.add(ms_field)
+
+        inner.add(cbs)
+        inner.add(ms_panel)
+
+        save = JButton("Save", actionPerformed=lambda e: self.save_delay(ms_field, attack_cb, access_cb, vt_cb))
+        south = JPanel(FlowLayout(FlowLayout.RIGHT))
+        south.add(save)
+
+        panel.add(inner, BorderLayout.CENTER)
+        panel.add(south, BorderLayout.SOUTH)
+        return panel
+
+    def save_delay(self, ms_field, attack_cb, access_cb, vt_cb):
+        try:
+            ms = int((ms_field.getText() or "0").strip())
+        except:
+            ms = 0
+        selected = []
+        if attack_cb.isSelected(): selected.append("attack")
+        if access_cb.isSelected(): selected.append("access")
+        if vt_cb.isSelected(): selected.append("vt")
+
+        h = (self.host or "").lower()
+        if h not in BAC_HOST_CONFIGS:
+            BAC_HOST_CONFIGS[h] = {}
+
+        if selected and ms > 0:
+            BAC_HOST_CONFIGS[h]["delay"] = {"ms": ms, "types": selected}
+            msg = "Saved delay: %d ms for %s" % (ms, ", ".join(selected))
+        else:
+            if h in BAC_HOST_CONFIGS and "delay" in BAC_HOST_CONFIGS[h]:
+                del BAC_HOST_CONFIGS[h]["delay"]
+            if h in BAC_HOST_CONFIGS and not BAC_HOST_CONFIGS[h]:
+                del BAC_HOST_CONFIGS[h]
+            msg = "Cleared delay settings."
+
+        try:
+            if self._callbacks is not None:
+                save_bac_configs(self._callbacks)
+        except:
+            pass
+        JOptionPane.showMessageDialog(self, msg)
+
 
     def add_row(self, value=""):
         row = JPanel(FlowLayout(FlowLayout.LEFT))

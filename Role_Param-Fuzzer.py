@@ -2212,13 +2212,28 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self._run_in_flight = False
         self._progress_total = 0
         self._progress_done = 0
+        self._stop_requested = False  # <— new
 
         self.progress = JProgressBar()
         self.progress.setVisible(False)
         self.progress.setStringPainted(True)   # show "x / y"
         self.progress.setIndeterminate(False)
 
+        # Stop button
+        self.stop_btn = JButton("Stop")
+        self.stop_btn.setFocusable(False)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setVisible(False)
+        def _do_stop(_e=None):
+            self._stop_requested = True
+            try:
+                self.progress.setString("Stopping… %d / %d" % (self._progress_done, self._progress_total))
+            except:
+                pass
+        self.stop_btn.addActionListener(_do_stop)
+
         right_top.add(self.progress)
+        right_top.add(self.stop_btn)  # <— add Stop button next to the bar
         # Small indicator when Rules were applied on the request
         self.rules_applied_lbl = JLabel("Ruled")
         self.rules_applied_lbl.setVisible(False)
@@ -2573,6 +2588,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self._run_in_flight = True
         self._progress_total = max(1, int(total_steps))
         self._progress_done = 0
+        self._stop_requested = False
         def ui():
             # lock buttons
             self.attack_btn.setEnabled(False)
@@ -2585,6 +2601,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.progress.setString("%s 0 / %d" % (label, self._progress_total))
             self.progress.setIndeterminate(False)  # set True if you prefer pulsing
             self.progress.setVisible(True)
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.setVisible(True)
             # wait cursor (nice to have)
             try:
                 self.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR))
@@ -2608,6 +2626,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             return
         self._run_in_flight = False
         def ui():
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setVisible(False)
             self.progress.setVisible(False)
             self.attack_btn.setEnabled(True)
             self.access_check_btn.setEnabled(True)
@@ -3521,6 +3541,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     return
 
                 for m in enabled_methods:
+                    if self._stop_requested:
+                        break
                     # convert
                     vt_req_str = self._convert_request_method(req_str, m)
                     vt_req_bytes = self.helpers.stringToBytes(vt_req_str)
@@ -3755,7 +3777,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                 # --- Attack URL params (type 0) ---
                 for pname in url_params:
+                    if self._stop_requested:
+                        break
                     for payload in url_payloads:
+                        if self._stop_requested:
+                            break
                         mod_req_bytes = req_bytes
                         for p in params:
                             if p.getName() == pname and p.getType() == 0:
@@ -3815,7 +3841,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 if not is_json:
                     # Process body parameters
                     for pname in body_params:
+                        if self._stop_requested:
+                            break
                         for payload in body_payloads:
+                            if self._stop_requested:
+                                break
                             mod_req_bytes = req_bytes
                             found_existing_param = False
                             
@@ -3931,7 +3961,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 self._tick()
 
                 # --- Attack JSON body keys if body is JSON ---
-                if is_json:
+                if is_json and not self._stop_requested:
                     try:
                         jbody = json.loads(body_str, strict=False)
                         if isinstance(jbody, (dict, list)):
@@ -4082,6 +4112,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 any_cookie_updated = False  # track if we updated any role cookies during this run
 
                 for idx, role in enumerate(list(self.bac_panel.role_data)):
+                    if self._stop_requested:
+                        break
                     if idx >= self.bac_panel.role_tabs.getTabCount() - 1 or not role.get("enabled", True):
                         continue
 

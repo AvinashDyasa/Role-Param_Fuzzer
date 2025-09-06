@@ -2209,7 +2209,11 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         # Small indicator when Rules were applied on the request
         self.rules_applied_lbl = JLabel("Ruled")
         self.rules_applied_lbl.setVisible(False)
+        # Indicator when Delay was applied on the request
+        self.delay_applied_lbl = JLabel("Delayed: 0ms")
+        self.delay_applied_lbl.setVisible(False)
         right_top.add(self.rules_applied_lbl)
+        right_top.add(self.delay_applied_lbl)
         right_top.add(self.status_indicator)
         topbar.add(right_top, BorderLayout.EAST)
 
@@ -3544,6 +3548,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     size = 0 if resp_bytes is None else len(bytearray(resp_bytes))
 
                     entry = MessageHistoryEntry(vt_req_bytes, resp_bytes, resp_time_ms=dt_ms, resp_size_bytes=size, kind="vt")
+                    try:
+                        entry.delay_applied_ms = get_delay_ms_for(service, "vt")
+                    except:
+                        pass
                     self.history.append(entry)
                     self.current_idx = len(self.history) - 1
 
@@ -3639,6 +3647,9 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     try:
                         e = self.history[self.current_idx]
                         self.rules_applied_lbl.setVisible(bool(getattr(e, "rules_applied", False)))
+                        ms = int(getattr(e, "delay_applied_ms", 0) or 0)
+                        self.delay_applied_lbl.setText("Delayed: %dms" % ms)
+                        self.delay_applied_lbl.setVisible(ms > 0)
                     except:
                         pass
                     # Defer the resize call to run *after* any UI events from show_entry have completed.
@@ -3775,6 +3786,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
                                                     resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                         try:
+                            entry.delay_applied_ms = get_delay_ms_for(service, "attack")
+                        except:
+                            pass
+                        try:
                             entry.rules_applied = bool(remove_list)
                         except:
                             pass
@@ -3891,6 +3906,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=pname, payload=payload,
                                                             resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                                 try:
+                                    entry.delay_applied_ms = get_delay_ms_for(service, "attack")
+                                except:
+                                    pass
+                                try:
                                     entry.rules_applied = bool(remove_list)
                                 except:
                                     pass
@@ -3948,6 +3967,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                         entry = MessageHistoryEntry(mod_req_bytes, resp_bytes, param_name=key_path, payload=payload,
                                                                     resp_time_ms=dt_ms, resp_size_bytes=size, kind="attack")
                                         try:
+                                            entry.delay_applied_ms = get_delay_ms_for(service, "attack")
+                                        except:
+                                            pass
+                                        try:
                                             entry.rules_applied = bool(remove_list)
                                         except:
                                             pass
@@ -3973,6 +3996,9 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         try:
                             e = self.history[self.current_idx]
                             self.rules_applied_lbl.setVisible(bool(getattr(e, "rules_applied", False)))
+                            ms = int(getattr(e, "delay_applied_ms", 0) or 0)
+                            self.delay_applied_lbl.setText("Delayed: %dms" % ms)
+                            self.delay_applied_lbl.setVisible(ms > 0)
                         except:
                             pass
                     else:
@@ -3980,6 +4006,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         self.update_status()
                         try:
                             self.rules_applied_lbl.setVisible(False)
+                            self.delay_applied_lbl.setVisible(False)
                         except:
                             pass
                     # Defer the resize call to run *after* any UI events from show_entry/update_status
@@ -4158,6 +4185,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         kind="role"
                     )
                     try:
+                        entry.delay_applied_ms = get_delay_ms_for(service, "access")
+                    except:
+                        pass
+                    try:
                         entry.rules_applied = bool(remove_list)
                     except:
                         pass
@@ -4262,12 +4293,16 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         try:
                             e = self.history[self.current_idx]
                             self.rules_applied_lbl.setVisible(bool(getattr(e, "rules_applied", False)))
+                            ms = int(getattr(e, "delay_applied_ms", 0) or 0)
+                            self.delay_applied_lbl.setText("Delayed: %dms" % ms)
+                            self.delay_applied_lbl.setVisible(ms > 0)
                         except:
                             pass
                     else:
                         self.update_status()
                         try:
                             self.rules_applied_lbl.setVisible(False)
+                            self.delay_applied_lbl.setVisible(False)
                         except:
                             pass
                     self.resize_sidebar()

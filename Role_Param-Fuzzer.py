@@ -3615,7 +3615,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                 # now send
                 t0 = time.time()
-                apply_delay_if_needed(service, "send")
                 resp = self.callbacks.makeHttpRequest(service, req_bytes)
                 dt_ms = int(round((time.time() - t0) * 1000))
                 resp_bytes = resp.getResponse()
@@ -4142,7 +4141,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                         mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                     t0 = time.time()
-                    apply_delay_if_needed(service, "attack")
+                    apply_delay_if_needed(service, "access")
                     resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                     dt_ms = int(round((time.time() - t0) * 1000))
@@ -4407,7 +4406,6 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     mod_req_bytes = self.helpers.stringToBytes(_s2)
 
                 t0 = time.time()
-                apply_delay_if_needed(service, "attack")
                 resp = self.callbacks.makeHttpRequest(service, mod_req_bytes)
 
                 dt_ms = int(round((time.time() - t0) * 1000))
@@ -5255,11 +5253,11 @@ def get_bac_host_config(host):
 def get_delay_ms_for(service, kind):
     try:
         h = (service.getHost() if service else "").lower()
-        conf = BAC_HOST_CONFIGS.get(h, {}).get("delay", {})
+        conf = get_bac_host_config(h).get("delay", {})  # parent-domain fallback
         ms = int(conf.get("ms", 0) or 0)
-        types = set([t.lower() for t in (conf.get("types") or [])])
-        key = {"send": "access", "attack": "attack", "vt": "vt"}.get((kind or "").lower(), (kind or "").lower())
-        if ms > 0 and (not types or key in types):
+        selected = set([str(t).lower() for t in (conf.get("types") or [])])
+        key = {"send": "access", "access": "access", "attack": "attack", "vt": "vt"}.get((kind or "").lower(), "")
+        if ms > 0 and (key in selected or "all" in selected):
             return ms
     except:
         pass

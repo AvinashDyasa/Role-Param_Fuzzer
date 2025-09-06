@@ -2224,6 +2224,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.stop_btn.setFocusable(False)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setVisible(False)
+        # show pointer/hand cursor on hover, even when parent is WAIT
+        self.stop_btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
         def _do_stop(_e=None):
             self._stop_requested = True
             try:
@@ -2593,6 +2595,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             # lock buttons
             self.attack_btn.setEnabled(False)
             self.access_check_btn.setEnabled(False)
+            self.vt_btn.setEnabled(False) 
             self.send_btn.setEnabled(False)
             # prime progress bar
             self.progress.setMinimum(0)
@@ -2630,6 +2633,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.stop_btn.setVisible(False)
             self.progress.setVisible(False)
             self.attack_btn.setEnabled(True)
+            self.vt_btn.setEnabled(True)  
             self.access_check_btn.setEnabled(True)
             self.send_btn.setEnabled(True)
             try:
@@ -2965,7 +2969,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     JOptionPane.showMessageDialog(self, "No tabs found in file.")
                     return
 
-                tab_names = [tab.get("tab_name", "Tab #%d" % (i+1)) for i, tab in enumerate(imported)]
+                tab_names = [tab.get("tab_name", str(i+1)) for i, tab in enumerate(imported)]
 
                 # --- Build checkbox panel with Select All ---
                 panel = JPanel()
@@ -5616,7 +5620,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
 
     def add_fuzzer_tab(self, base_message=None):
         tab_count = self.tabs.getTabCount()
-        tab_name = "Tab #%d" % tab_count
+        tab_name = str(tab_count)
         
         # This logic is now handled by on_tab_switched, but we can leave it as a fallback.
         if tab_count > 1:
@@ -5682,7 +5686,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
             tab_data, self._helpers, self._callbacks, self.save_all_tabs_state, parent_extender=self
         )
         insert_at = self.tabs.getTabCount() - 1
-        tab_name = tab_data.get("tab_name", "Tab #%d" % (insert_at + 1))
+        tab_name = tab_data.get("tab_name", str(insert_at + 1))
         self.tabs.insertTab(tab_name, None, tab_panel, None, insert_at)
         self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, tab_panel, tab_name))
         self.tabs.setSelectedComponent(tab_panel)

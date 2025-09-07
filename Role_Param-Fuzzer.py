@@ -4246,7 +4246,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                     # --- Auto refresh cookies from Set-Cookie (inline; per-role) ---
                     try:
-                        if bool(role.get("auto_refresh", True)) and resp_bytes is not None:
+                        if bool(role.get("auto_refresh", False)) and resp_bytes is not None:
                             # Find the Cookie header slot in this role
                             cookie_idx = None
                             headers_list = role.get("headers", [])
@@ -4511,7 +4511,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
                 # --- Auto refresh cookies from Set-Cookie (inline; no extra helpers) ---
                 try:
-                    if bool(role.get("auto_refresh", True)) and resp_bytes is not None:
+                    if bool(role.get("auto_refresh", False)) and resp_bytes is not None:
                         # Find the Cookie header slot in this role
                         cookie_idx = None
                         headers_list = role.get("headers", [])
@@ -5365,8 +5365,8 @@ class RulesDialog(JDialog):
         self._callbacks = callbacks
 
         tabs = JTabbedPane()
-        tabs.addTab("Delete Headers", self.build_delete_headers_tab())
         tabs.addTab("Delay", self.build_delay_tab())
+        tabs.addTab("Delete Headers", self.build_delete_headers_tab())
         self.add(tabs, BorderLayout.CENTER)
 
         self.setLocationRelativeTo(parent)

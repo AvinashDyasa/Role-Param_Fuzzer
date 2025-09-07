@@ -5413,9 +5413,9 @@ class RulesDialog(JDialog):
         # Checkboxes row
         cbs = JPanel(FlowLayout(FlowLayout.LEFT))
         toggle_all = JCheckBox("Toggle all")
-        attack_cb = JCheckBox("Attack")
-        access_cb = JCheckBox("Access check")
-        vt_cb = JCheckBox("VT")
+        attack_cb = JCheckBox("Attack"); attack_cb.setPreferredSize(attack_cb.getPreferredSize())
+        access_cb = JCheckBox("Access check"); access_cb.setPreferredSize(access_cb.getPreferredSize())
+        vt_cb = JCheckBox("VT"); vt_cb.setPreferredSize(vt_cb.getPreferredSize())
 
         # Initial state
         attack_cb.setSelected("attack" in types)
@@ -5432,16 +5432,21 @@ class RulesDialog(JDialog):
 
         cbs.add(toggle_all); cbs.add(attack_cb); cbs.add(access_cb); cbs.add(vt_cb)
 
-        # Milliseconds input
+        # Delay input with unit radios
         ms_panel = JPanel(FlowLayout(FlowLayout.LEFT))
-        ms_label = JLabel("Delay (milliseconds):")
+        ms_label = JLabel("Delay:")
         ms_field = JTextField(str(ms_val), 8)
-        ms_panel.add(ms_label); ms_panel.add(ms_field)
+        ms_rb = JRadioButton("ms", True)
+        sec_rb = JRadioButton("sec", False)
+        unit_group = ButtonGroup()
+        unit_group.add(ms_rb); unit_group.add(sec_rb)
+        ms_panel.add(ms_label); ms_panel.add(ms_field); ms_panel.add(ms_rb); ms_panel.add(sec_rb)
+
 
         inner.add(cbs)
         inner.add(ms_panel)
 
-        save = JButton("Save", actionPerformed=lambda e: self.save_delay(ms_field, attack_cb, access_cb, vt_cb))
+        save = JButton("Save", actionPerformed=lambda e: self.save_delay(ms_field, ms_rb, sec_rb, attack_cb, access_cb, vt_cb))
         south = JPanel(FlowLayout(FlowLayout.RIGHT))
         south.add(save)
 
@@ -5449,11 +5454,13 @@ class RulesDialog(JDialog):
         panel.add(south, BorderLayout.SOUTH)
         return panel
 
-    def save_delay(self, ms_field, attack_cb, access_cb, vt_cb):
+    def save_delay(self, ms_field, ms_rb, sec_rb, attack_cb, access_cb, vt_cb):
         try:
-            ms = int((ms_field.getText() or "0").strip())
+            val = float((ms_field.getText() or "0").strip())
         except:
-            ms = 0
+            val = 0.0
+        # Convert based on selected unit
+        ms = int(round(val * 1000.0)) if sec_rb.isSelected() else int(round(val))
         selected = []
         if attack_cb.isSelected(): selected.append("attack")
         if access_cb.isSelected(): selected.append("access")

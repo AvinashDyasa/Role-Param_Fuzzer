@@ -1051,6 +1051,86 @@ class BACCheckPanel(JPanel):
                     pass
                 return cfg
 
+            def _resolve_control_conflict(role_cfg):
+                try:
+                    if not bool(role_cfg.get("is_control", False)):
+                        return
+                    existing = None
+                    for rc in (getattr(self, "role_data", []) or []):
+                        if rc.get("is_control"):
+                            existing = rc
+                            break
+                    if not existing:
+                        return
+                    prev_label = existing.get("label", "Unknown")
+                    this_label = role_cfg.get("label", "Unnamed")
+                    options = ["Cancel", "Switch"]
+                    choice = JOptionPane.showOptionDialog(
+                        self, "Control role is already set to tab: \"%s\".\nDo you want to switch it to \"%s\"?" % (prev_label, this_label),
+                        "Switch control role?", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, None, options, options[0]
+                    )
+                    if choice == 1:  # Switch
+                        existing["is_control"] = False
+                        try:
+                            ck = self._ctrl_chk_refs.get(existing.get("label", None))
+                            if ck: ck.setSelected(False)
+                        except: pass
+                        self.control_role_label = role_cfg.get("label", None)
+                        role_cfg["is_control"] = True
+                    else:
+                        # Cancel: keep current control; downgrade imported one
+                        role_cfg["is_control"] = False
+                except:
+                    # fail-safe: never allow duplicate control
+                    role_cfg["is_control"] = False
+
+            def _resolve_control_on_import(role_cfg):
+                """
+                If the incoming role is marked control and there is an existing control,
+                prompt Switch/Cancel. On Switch: make incoming control and unset existing.
+                On Cancel: keep existing control; incoming becomes normal.
+                """
+                try:
+                    incoming_is_ctrl = bool(role_cfg.get("is_control", False))
+                    if not incoming_is_ctrl:
+                        return
+                    existing_ctrl = None
+                    for rc in (self.role_data or []):
+                        if rc.get("is_control", False):
+                            existing_ctrl = rc
+                            break
+                    if not existing_ctrl:
+                        return  # no conflict
+                    prev_label = existing_ctrl.get("label", "Unknown")
+                    this_label = role_cfg.get("label", "Imported")
+                    options = ["Cancel", "Switch"]
+                    choice = JOptionPane.showOptionDialog(
+                        self,
+                        "Control role is already set to tab: \"%s\".\nDo you want to switch it to \"%s\"?" % (prev_label, this_label),
+                        "Switch control role?",
+                        JOptionPane.DEFAULT_OPTION,
+                        JOptionPane.QUESTION_MESSAGE,
+                        None,
+                        options,
+                        options[0]
+                    )
+                    if choice == 1:  # Switch
+                        # unset previous control + uncheck if UI ref exists
+                        existing_ctrl["is_control"] = False
+                        try:
+                            ck = self._ctrl_chk_refs.get(existing_ctrl.get("label", None))
+                            if ck: ck.setSelected(False)
+                        except:
+                            pass
+                        # set incoming as control
+                        role_cfg["is_control"] = True
+                        self.control_role_label = role_cfg.get("label", None)
+                    else:
+                        # Cancel -> keep existing control; incoming becomes normal
+                        role_cfg["is_control"] = False
+                except:
+                    pass
+
             if unarchive_all:
                 # All selected go to ACTIVE; consider duplicates across BOTH stores
                 for role_cfg in (selected_active + selected_arch):
@@ -1059,7 +1139,12 @@ class BACCheckPanel(JPanel):
                         skipped_dupes += 1
                         continue
                     seen_import_sigs.add(s)
-                    self._add_role_tab_internal(role_cfg.get("label", None), _clean_for_store(dict(role_cfg)))
+                    # Resolve control conflicts before adding to active
+                    _resolve_control_on_import(role_cfg)
+                    _tmp = dict(role_cfg)
+                    _resolve_control_conflict = locals().get("_resolve_control_conflict")
+                    if _resolve_control_conflict: _resolve_control_conflict(_tmp)
+                    self._add_role_tab_internal(_tmp.get("label", None), _clean_for_store(_tmp))
                     existing_sigs_active.add(s)
                     added_count += 1
             else:
@@ -1071,7 +1156,11 @@ class BACCheckPanel(JPanel):
                         skipped_dupes += 1
                         continue
                     seen_import_sigs.add(s)
-                    self._add_role_tab_internal(role_cfg.get("label", None), _clean_for_store(dict(role_cfg)))
+                    _resolve_control_on_import(role_cfg)
+                    _tmp = dict(role_cfg)
+                    _resolve_control_conflict = locals().get("_resolve_control_conflict")
+                    if _resolve_control_conflict: _resolve_control_conflict(_tmp)
+                    self._add_role_tab_internal(_tmp.get("label", None), _clean_for_store(_tmp))
                     existing_sigs_active.add(s)
                     added_count += 1
 
@@ -1085,7 +1174,10 @@ class BACCheckPanel(JPanel):
                             skipped_dupes += 1
                             continue
                         seen_import_sigs.add(s)
-                        self.archived_role_data.append(_clean_for_store(dict(role_cfg)))
+                        # Archived roles must NOT keep control flag
+                        rc = dict(role_cfg)
+                        rc["is_control"] = False
+                        self.archived_role_data.append(_clean_for_store(rc))
                         existing_sigs_arch.add(s)
                         added_count += 1
 
@@ -1378,10 +1470,31 @@ class BACCheckPanel(JPanel):
 
             def move_selected_to_archive(evt=None):
                 moved = [cb.getClientProperty("role_obj") for cb in left_checks if cb.isSelected()]
+                # Clear control flag before moving
+                for role in moved:
+                    if role.get("is_control", False):
+                        role["is_control"] = False
+                        try:
+                            prev_label = role.get("label", None)
+                            ck = self._ctrl_chk_refs.get(prev_label)
+                            if ck: ck.setSelected(False)
+                        except:
+                            pass
+                        if self.control_role_label == role.get("label", None):
+                            self.control_role_label = None
                 # Remove from active
                 for role in moved:
                     if role in self.role_data:
                         self.role_data.remove(role)
+                    # if this was control, clear it and UI state
+                    if role.get("is_control"):
+                        role["is_control"] = False
+                        if self.control_role_label == role.get("label", None):
+                            self.control_role_label = None
+                        try:
+                            ck = self._ctrl_chk_refs.get(role.get("label", None))
+                            if ck: ck.setSelected(False)
+                        except: pass
                 # Add to archived
                 if moved:
                     self.archived_role_data.extend(moved)
@@ -1405,6 +1518,17 @@ class BACCheckPanel(JPanel):
             def move_all_to_archive(evt=None):
                 count = len(self.role_data)
                 if count:
+                    # Clear control on every role before archiving
+                    for role in self.role_data:
+                        if role.get("is_control", False):
+                            role["is_control"] = False
+                            try:
+                                prev_label = role.get("label", None)
+                                ck = self._ctrl_chk_refs.get(prev_label)
+                                if ck: ck.setSelected(False)
+                            except:
+                                pass
+                    self.control_role_label = None
                     self.archived_role_data.extend(self.role_data)
                     self.role_data = []
                     self.save_state()
@@ -1999,7 +2123,17 @@ class BACCheckPanel(JPanel):
         # store UI ref in a transient map, not in role_cfg (to avoid JSON errors)
         label_key = role_cfg.get("label", None) or ("role_%d" % len(self._ctrl_chk_refs))
         self._ctrl_chk_refs[label_key] = ctrl_chk
-        ctrl_chk.setSelected(bool(role_cfg.get("is_control", False)))
+        # guard: if another role is already control, drop this flag during rebuild/import
+        _should = bool(role_cfg.get("is_control", False))
+        if _should:
+            for _rc in self.role_data:
+                if _rc is not role_cfg and _rc.get("is_control"):
+                    _should = False
+                    role_cfg["is_control"] = False
+                    break
+        ctrl_chk.setSelected(_should)
+        if _should:
+            self.control_role_label = role_cfg.get("label", None)
         ctrl_row.add(ctrl_chk)
         panel.add(ctrl_row)
 
@@ -3144,7 +3278,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     "extra_enabled": role.get("extra_enabled", False),
                     "extra_name": role.get("extra_name", ""),
                     "extra_value": role.get("extra_value", ""),
-                    "force": role.get("force", False)
+                    "force": role.get("force", False),
+                    "is_control": bool(role.get("is_control", False))
                 })
         # Save the tab name (if available)
         tab_name = None
@@ -3162,7 +3297,8 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             "extra_enabled": role.get("extra_enabled", False),
                             "extra_name": role.get("extra_name", ""),
                             "extra_value": role.get("extra_value", ""),
-                            "force": role.get("force", False)
+                            "force": role.get("force", False),
+                            "is_control": bool(role.get("is_control", False))
                         })
                 # archived roles
                 if hasattr(self.bac_panel, "archived_role_data") and self.bac_panel.archived_role_data:

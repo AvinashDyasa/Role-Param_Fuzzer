@@ -4359,11 +4359,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     request_line = base_headers[0]
                     rest_headers = base_headers[1:]
 
-                    changed_headers = []
-                    unchanged_headers = []
+                    # Build in-place rewrite map to preserve order and club changes
+                    changed_at = {}   # idx -> new header line (or None for delete)
                     used_headers = set()
-
-                    for h in rest_headers:
+                    for i, h in enumerate(rest_headers):
                         if ':' in h:
                             hname, hval = h.split(':', 1)
                             hname_stripped = hname.strip()
@@ -4373,56 +4372,76 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 mode = rule.get("mode", "replace")
                                 rvalue = rule.get("value", "")
                                 if mode == "delete":
-                                    # delete if no value provided OR value matches existing
                                     existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
                                     if (not rvalue) or (existing_val == rvalue):
+                                        changed_at[i] = None  # delete here
                                         used_headers.add(hname_lc)
-                                        # skip (delete)
-                                        continue
                                     else:
-                                        # value mismatch -> keep original
-                                        unchanged_headers.append(h)
-                                elif mode == "modify":
+                                        # keep original (no change)
+                                        pass
+                                elif mode == "modify" and hname_lc == "cookie":
                                     existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
-                                    if hname_lc == "cookie":
-                                        new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
-                                        changed_headers.append("%s: %s" % (hname_stripped, new_val))
-                                        used_headers.add(hname_lc)
-                                    else:
-                                        # fallback: behave like Replace for non-Cookie headers
-                                        changed_headers.append("%s: %s" % (hname_stripped, rvalue))
-                                        used_headers.add(hname_lc)
-                                else:
-                                    # replace
-                                    changed_headers.append("%s: %s" % (hname_stripped, rvalue))
+                                    new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
+                                    changed_at[i] = "%s: %s" % (hname_stripped, new_val)
                                     used_headers.add(hname_lc)
-                            else:
-                                unchanged_headers.append(h)
+                                else:
+                                    # replace / modify (non-cookie)
+                                    changed_at[i] = "%s: %s" % (hname_stripped, rvalue)
+                                    used_headers.add(hname_lc)
+                            # else: untouched
+                        # else: untouched bare line
 
-                        else:
-                            unchanged_headers.append(h)
-
-                    # Add any new headers from role not originally present (only if Force is enabled)
+                    # Prepare additions (Force) that weren't present originally
+                    additions = []
                     if role.get("force", False):
                         for hname_lc, rule in role_headers.items():
                             if rule.get("mode", "replace") == "delete":
-                                continue  # never add a header that is set to delete
+                                continue
                             if hname_lc not in used_headers:
-                                changed_headers.append("%s: %s" % (hname_lc, rule.get("value", "")))
+                                additions.append("%s: %s" % (hname_lc, rule.get("value", "")))
 
-                    # Add extra header after changed ones
+                    # Extra header behaves like an addition but should not duplicate existing
                     if role.get('extra_enabled') and role.get('extra_name'):
                         extra_name = role.get('extra_name').strip()
                         extra_value = role.get('extra_value', '')
                         extra_name_lc = extra_name.lower()
-                        unchanged_headers = [
-                            h for h in unchanged_headers
-                            if not (':' in h and h.split(':', 1)[0].strip().lower() == extra_name_lc)
-                        ]
-                        changed_headers.append("%s: %s" % (extra_name, extra_value))
+                        # if exists in original, treat as change at that index (and clubbed)
+                        found_idx = None
+                        for i, h in enumerate(rest_headers):
+                            if ':' in h and h.split(':',1)[0].strip().lower() == extra_name_lc:
+                                found_idx = i; break
+                        if found_idx is not None:
+                            changed_at[found_idx] = "%s: %s" % (extra_name, extra_value)
+                            used_headers.add(extra_name_lc)
+                        else:
+                            additions.append("%s: %s" % (extra_name, extra_value))
 
-                    # Final assembly
-                    modified_headers = [request_line] + changed_headers + unchanged_headers
+                    # Compute club start = earliest changed/deleted index
+                    club_indices = sorted(changed_at.keys())
+                    club_start = club_indices[0] if club_indices else None
+
+                    # Build clubbed sequence: all changed (non-deleted) in ascending original order + additions
+                    clubbed = [changed_at[i] for i in club_indices if changed_at[i] is not None] + additions
+
+                    # Stitch output preserving original order; insert clubbed block at club_start
+                    out_headers = []
+                    if club_start is None:
+                        # no changes -> keep all, then append additions (if any) right after first header position effect
+                        out_headers = list(rest_headers)
+                        if additions:
+                            # insert after first header line position (index 0 of rest_headers)
+                            insert_pos = 0
+                            out_headers = out_headers[:insert_pos] + additions + out_headers[insert_pos:]
+                    else:
+                        for i in range(len(rest_headers)):
+                            if i == club_start:
+                                out_headers.extend(clubbed)
+                            if i in changed_at:
+                                # skip original (handled by clubbed or deleted)
+                                continue
+                            out_headers.append(rest_headers[i])
+
+                    modified_headers = [request_line] + out_headers
                     new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body
                     mod_req_bytes = self.helpers.stringToBytes(new_req_str)
 
@@ -4637,8 +4656,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 request_line = base_headers[0]
                 rest_headers = base_headers[1:]
 
-                changed_headers, unchanged_headers, used = [], [], set()
-                for h in rest_headers:
+                # Build in-place rewrite map to preserve order and club changes
+                changed_at = {}   # idx -> new header line (or None for delete)
+                used = set()
+                for i, h in enumerate(rest_headers):
                     if ':' in h:
                         hn, hv = h.split(':', 1)
                         hn_stripped = hn.strip()
@@ -4648,54 +4669,63 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             mode = rule.get("mode", "replace")
                             rvalue = rule.get("value", "")
                             if mode == "delete":
-                                existing_val = hv.strip()
+                                existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
                                 if (not rvalue) or (existing_val == rvalue):
+                                    changed_at[i] = None
                                     used.add(hn_lc)
-                                    # skip (delete)
-                                    continue
-                                else:
-                                    unchanged_headers.append(h)
-                            elif mode == "modify":
-                                existing_val = hv.strip()
-                                if hn_lc == "cookie":
-                                    new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
-                                    changed_headers.append("%s: %s" % (hn_stripped, new_val))
-                                    used.add(hn_lc)
-                                else:
-                                    # fallback: behave like Replace for non-Cookie headers
-                                    changed_headers.append("%s: %s" % (hn_stripped, rvalue))
-                                    used.add(hn_lc)
-                            else:
-                                # replace
-                                changed_headers.append("%s: %s" % (hn_stripped, rvalue))
+                            elif mode == "modify" and hn_lc == "cookie":
+                                existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
+                                new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
+                                changed_at[i] = "%s: %s" % (hn_stripped, new_val)
                                 used.add(hn_lc)
-                        else:
-                            unchanged_headers.append(h)
+                            else:
+                                changed_at[i] = "%s: %s" % (hn_stripped, rvalue)
+                                used.add(hn_lc)
+                        # else untouched
 
-                    else:
-                        unchanged_headers.append(h)
-
-                # Add headers present only in role (only if Force is enabled)
+                # Additions (Force) not present originally
+                additions = []
                 if role.get("force", False):
                     for hn_lc, rule in role_headers.items():
-                        if rule.get("mode", "replace") == "delete":
-                            continue  # skip adding headers marked for delete
+                        if rule.get("mode", "replace") == "delete": continue
                         if hn_lc not in used:
-                            changed_headers.append("%s: %s" % (hn_lc, rule.get("value", "")))
+                            additions.append("%s: %s" % (hn_lc, rule.get("value", "")))
 
-                # Extra header support
+                # Extra header (clubbed)
                 if role.get('extra_enabled') and role.get('extra_name'):
                     ename = role.get('extra_name', '').strip()
                     eval_  = role.get('extra_value', '')
                     ename_lc = ename.lower()
-                    unchanged_headers = [
-                        h for h in unchanged_headers
-                        if not (':' in h and h.split(':', 1)[0].strip().lower() == ename_lc)
-                    ]
-                    changed_headers.append("%s: %s" % (ename, eval_))
+                    found_idx = None
+                    for i, h in enumerate(rest_headers):
+                        if ':' in h and h.split(':',1)[0].strip().lower() == ename_lc:
+                            found_idx = i; break
+                    if found_idx is not None:
+                        changed_at[found_idx] = "%s: %s" % (ename, eval_)
+                        used.add(ename_lc)
+                    else:
+                        additions.append("%s: %s" % (ename, eval_))
 
-                # Final request
-                modified_headers = [request_line] + changed_headers + unchanged_headers
+                # Clubbing + final assembly
+                club_indices = sorted(changed_at.keys())
+                club_start = club_indices[0] if club_indices else None
+                clubbed = [changed_at[i] for i in club_indices if changed_at[i] is not None] + additions
+
+                out_headers = []
+                if club_start is None:
+                    out_headers = list(rest_headers)
+                    if additions:
+                        insert_pos = 0
+                        out_headers = out_headers[:insert_pos] + additions + out_headers[insert_pos:]
+                else:
+                    for i in range(len(rest_headers)):
+                        if i == club_start:
+                            out_headers.extend(clubbed)
+                        if i in changed_at:
+                            continue
+                        out_headers.append(rest_headers[i])
+
+                modified_headers = [request_line] + out_headers
                 new_req_str = "\r\n".join(modified_headers) + "\r\n\r\n" + body_part
                 mod_req_bytes = self.helpers.stringToBytes(new_req_str)
 

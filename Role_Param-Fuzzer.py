@@ -28,7 +28,9 @@ from java.lang import Boolean, Integer
 from java.io import File
 from javax.imageio import ImageIO
 from java.net import URL
-from javax.swing.border import EmptyBorder
+from javax.swing.border import EmptyBorder, LineBorder
+from javax.swing.text import DefaultHighlighter
+import difflib
 
 ### ---------bac
 # Global per-host BAC config storage
@@ -563,6 +565,10 @@ class BACCheckPanel(JPanel):
         self.setMinimumSize(Dimension(450, 500))  # Optimal minimum size for full functionality
         self.role_data = []
         self.role_tabs = JTabbedPane(JTabbedPane.TOP)
+        self.control_role_label = None  # currently selected control role's label (if any)
+        self._ctrl_chk_refs = {}        # label -> JCheckBox (UI refs only; do NOT persist)
+
+
         self.role_tabs.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT)  # Changed to WRAP for grid format
         self.role_tabs.setTabPlacement(JTabbedPane.TOP)
         self.role_tabs.setMinimumSize(Dimension(450, 200))  # Match panel minimum width
@@ -775,7 +781,6 @@ class BACCheckPanel(JPanel):
                 return
 
             # ---------- Build two-column selector (Unarchived | Archived) ----------
-            from javax.swing.border import EmptyBorder
 
             main = JPanel(BorderLayout())
             main.setBorder(EmptyBorder(10, 12, 10, 12))
@@ -940,7 +945,6 @@ class BACCheckPanel(JPanel):
             unarchive_all = unarch_rb.isSelected()
 
             # ---------- Selection UI (2 columns like Archive/Delete) ----------
-            from javax.swing.border import EmptyBorder
             main = JPanel(BorderLayout())
             main.setBorder(EmptyBorder(10, 12, 10, 12))
 
@@ -1267,10 +1271,9 @@ class BACCheckPanel(JPanel):
             JOptionPane.showMessageDialog(self, "Error opening Delete Roles:\n" + str(e) + "\n" + traceback.format_exc())
 
 
+
     def open_archive_manager(self, event=None):
         try:
-            from javax.swing import JDialog
-            from javax.swing.border import EmptyBorder
 
             dlg = JDialog()
             dlg.setTitle("Archive Roles")
@@ -1989,6 +1992,71 @@ class BACCheckPanel(JPanel):
         extra_name.addCaretListener(lambda evt: on_extra_name_change())
         extra_val.addCaretListener(lambda evt: on_extra_val_change())
 
+# --- Control role row (per-role) ---
+        ctrl_row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        ctrl_chk = JCheckBox("Control role")
+        # keep a back-ref for auto-uncheck when switching
+        # store UI ref in a transient map, not in role_cfg (to avoid JSON errors)
+        label_key = role_cfg.get("label", None) or ("role_%d" % len(self._ctrl_chk_refs))
+        self._ctrl_chk_refs[label_key] = ctrl_chk
+        ctrl_chk.setSelected(bool(role_cfg.get("is_control", False)))
+        ctrl_row.add(ctrl_chk)
+        panel.add(ctrl_row)
+
+        def on_ctrl_toggle(evt=None):
+            try:
+                this_label = role_cfg.get("label", None)
+                if ctrl_chk.isSelected():
+                    # find any other control already set
+                    prev = None
+                    for rc in self.role_data:
+                        if rc is not role_cfg and rc.get("is_control"):
+                            prev = rc
+                            break
+                    if prev:
+                        prev_label = prev.get("label", "Unknown")
+                        # Prompt with Cancel / Switch
+                        options = ["Cancel", "Switch"]
+                        choice = JOptionPane.showOptionDialog(
+                            panel,
+                            "Control role is already set to tab: \"%s\".\nDo you want to switch it to \"%s\"?" % (prev_label, this_label or "Unnamed"),
+                            "Switch control role?",
+                            JOptionPane.DEFAULT_OPTION,
+                            JOptionPane.QUESTION_MESSAGE,
+                            None,
+                            options,
+                            options[0]
+                        )
+                        if choice != 1:  # not "Switch"
+                            # revert this checkbox
+                            ctrl_chk.setSelected(False)
+                            return
+                        # Switch: unset previous, uncheck its UI if present
+                        prev["is_control"] = False
+                        try:
+                            prev_label = prev.get("label", None)
+                            ck = self._ctrl_chk_refs.get(prev_label)
+                            if ck:
+                                ck.setSelected(False)
+                        except:
+                            pass
+                    # set current as control
+                    for rc in self.role_data:
+                        if rc is not role_cfg:
+                            rc["is_control"] = False
+                    role_cfg["is_control"] = True
+                    self.control_role_label = this_label
+                else:
+                    # unsetting current control
+                    role_cfg["is_control"] = False
+                    if self.control_role_label == role_cfg.get("label", None):
+                        self.control_role_label = None
+                if self.on_save_callback:
+                    self.on_save_callback(self.host)
+            except:
+                pass
+        ctrl_chk.addActionListener(lambda evt: on_ctrl_toggle())
+
         # --- Force toggle row (per-role) ---
         force_row = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
         force_chk = JCheckBox("Force (add missing headers)")
@@ -2284,6 +2352,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.export_tabs_btn = JButton("Export Tabs", actionPerformed=self.exportTabsForImport)
         self.merge_export_tabs_btn = JButton("Merge Export", actionPerformed=(lambda e: self.parent_extender.mergeExportTabsForImport(e)))
         self.import_tabs_btn = JButton("Import Tabs", actionPerformed=self.importTabsFromFile)
+        self.comparer_btn = JButton("Comparer", actionPerformed=lambda e: self.open_compare_dialog_with_history())
 
         # Rules button (opens Rules dialog)
         self.rules_btn = JButton("Settings")
@@ -2307,19 +2376,40 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                 JOptionPane.showMessageDialog(self, "Error opening Settings: " + str(e))
         self.rules_btn.addActionListener(open_rules)
 
-        # Order: Rules, Export Tabs, Merge Export, Import Tabs, Screenshot
+        # Order: Rules, Export Tabs, Merge Export, Import Tabs, Comparer, Screenshot
         btn_panel.add(self.rules_btn)
         btn_panel.add(self.export_tabs_btn)
         btn_panel.add(self.merge_export_tabs_btn)
         btn_panel.add(self.import_tabs_btn)
+        btn_panel.add(self.comparer_btn)
         btn_panel.add(self.screenshot_btn)
-
         right_container = JPanel(BorderLayout())
         right_container.add(btn_panel, BorderLayout.WEST)
+
+        # clickable similarity label (center)
+        self.similarity_lbl = JLabel(" ")
+        self.similarity_lbl.setToolTipText("Click to compare with Control role")
+        self.similarity_lbl.setBorder(BorderFactory.createEmptyBorder(0, 8, 0, 8))
+        self.similarity_lbl.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
+        def _open_quick_compare(evt=None):
+            try:
+                self.open_compare_dialog_with_control()
+            except Exception as e:
+                try:
+                    print("[Comparer] click error:", e)
+                except:
+                    pass
+        self.similarity_lbl.addMouseListener(
+            type("SimClick", (MouseAdapter,), {
+                "mouseClicked": lambda _self, evt: _open_quick_compare(evt)
+            })()
+        )
 
         self.metrics_lbl = JLabel(" ")  # will show: "295 bytes | 11 ms"
         self.metrics_lbl.setHorizontalAlignment(SwingConstants.RIGHT)
         self.metrics_lbl.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 8))
+
+        right_container.add(self.similarity_lbl, BorderLayout.CENTER)
         right_container.add(self.metrics_lbl, BorderLayout.EAST)
 
         bottom_panel.add(right_container, BorderLayout.EAST)
@@ -4712,12 +4802,28 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
             self.resp_editor.setMessage(bytearray(), False)
             if hasattr(self, "metrics_lbl"):
                 self.metrics_lbl.setText(" ")
+                try:
+                    if hasattr(self, "similarity_lbl"):
+                        self.similarity_lbl.setText(" ")
+                except:
+                    pass
         else:
             self.resp_editor.setMessage(entry.resp_bytes, False)
             if hasattr(self, "metrics_lbl"):
                 size = entry.resp_size_bytes if entry.resp_size_bytes is not None else len(bytearray(entry.resp_bytes))
                 ms = entry.resp_time_ms if entry.resp_time_ms is not None else 0
                 self.metrics_lbl.setText("%d bytes | %d ms" % (size, ms))
+                # similarity %
+                try:
+                    if hasattr(self, "similarity_lbl"):
+                        perc = self.compute_similarity_vs_control(entry)
+                        self.similarity_lbl.setText(("%d%%" % perc) if perc is not None else " ")
+                except:
+                    try:
+                        if hasattr(self, "similarity_lbl"):
+                            self.similarity_lbl.setText(" ")
+                    except:
+                        pass
 
         # Update status square from the selected entry
         self.update_status_indicator_from_entry(entry)
@@ -4725,6 +4831,119 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
         self.update_history_title(self.history[idx] if 0 <= idx < len(self.history) else None)
         self.update_status()
         
+    def compute_similarity_vs_control(self, entry):
+        try:
+            if entry is None or entry.resp_bytes is None:
+                return None
+            ctrl_body = self._get_latest_control_body()
+            if not ctrl_body:
+                return None
+            curr_body = self._extract_body_text(entry.resp_bytes)
+            if curr_body is None:
+                return None
+            import difflib, re
+            a = re.findall(r"\w+|\W", ctrl_body)
+            b = re.findall(r"\w+|\W", curr_body)
+            ratio = difflib.SequenceMatcher(None, a, b).ratio()
+            return int(round(ratio * 100))
+        except:
+            return None
+
+    def _get_latest_control_body(self):
+        try:
+            bp = getattr(self, "bac_panel", None)
+            label = None
+            if bp:
+                label = getattr(bp, "control_role_label", None)
+                if not label:
+                    for rc in getattr(bp, "role_data", []):
+                        if rc.get("is_control"):
+                            label = rc.get("label", None)
+                            break
+            else:
+                # fallback to local (legacy)
+                label = getattr(self, "control_role_label", None)
+                if not label:
+                    for rc in getattr(self, "role_data", []):
+                        if rc.get("is_control"):
+                            label = rc.get("label", None)
+                            break
+            if not label:
+                return None
+            for ent in reversed(getattr(self, "history", [])):
+                if getattr(ent, "param_name", None) == label and getattr(ent, "resp_bytes", None) is not None:
+                    return self._extract_body_text(ent.resp_bytes)
+        except:
+            pass
+        return None
+
+    def _extract_body_text(self, resp_bytes):
+        try:
+            info = self.helpers.analyzeResponse(resp_bytes)
+            body_off = info.getBodyOffset()
+            raw = bytearray(resp_bytes)
+            return self.helpers.bytesToString(raw[body_off:]) if body_off is not None else self.helpers.bytesToString(raw)
+        except:
+            return None
+
+    def open_compare_dialog_with_control(self):
+        try:
+            if not getattr(self, "history", None) or getattr(self, "current_idx", -1) < 0:
+                JOptionPane.showMessageDialog(self, "No response selected.", "Comparer", JOptionPane.WARNING_MESSAGE)
+                return
+            curr = self.history[self.current_idx]
+
+            left = self._get_latest_control_body()
+            if left is None:
+                JOptionPane.showMessageDialog(self, "No Control role body found. Set a Control role and run Access Check.", "Comparer", JOptionPane.WARNING_MESSAGE)
+                return
+
+            right = self._extract_body_text(curr.resp_bytes) if getattr(curr, "resp_bytes", None) else None
+            if right is None:
+                JOptionPane.showMessageDialog(self, "Current entry has no response body.", "Comparer", JOptionPane.WARNING_MESSAGE)
+                return
+
+            ctrl_label = getattr(getattr(self, "bac_panel", None), "control_role_label", None) or getattr(self, "control_role_label", None)
+            left_title = "Control: %s" % (ctrl_label or "—")
+            right_title = self.summarize_entry(curr) if hasattr(self, "summarize_entry") else "Current"
+
+            dlg = DiffDialog(self, left_title, left, right_title, right, history=self.history)
+
+            # --- Preselect the right entries in dropdowns ---
+            left_idx = None
+            try:
+                if ctrl_label:
+                    for i in range(len(self.history) - 1, -1, -1):
+                        ent = self.history[i]
+                        if getattr(ent, "param_name", None) == ctrl_label and getattr(ent, "resp_bytes", None) is not None:
+                            left_idx = i
+                            break
+            except:
+                pass
+            right_idx = getattr(self, "current_idx", -1)
+
+            try:
+                if left_idx is not None and right_idx >= 0:
+                    dlg.select_history_pair(left_idx, right_idx)
+            except Exception as e:
+                print("[Comparer] preselect failed:", e)
+
+            dlg.setLocationRelativeTo(self)
+            dlg.setVisible(True)
+        except Exception as e:
+            print("[Comparer] open failed:", e)
+
+    def open_compare_dialog_with_history(self):
+        try:
+            dlg = DiffDialog(self, "Left", "", "Right", "", history=getattr(self, "history", []))
+            dlg.setLocationRelativeTo(self)
+            dlg.setVisible(True)
+        except Exception as e:
+            try:
+                print("[Comparer] history dialog failed:", e)
+            except:
+                pass
+
 
     def update_status_indicator_from_entry(self, entry):
         try:
@@ -5046,7 +5265,7 @@ class ClosableTabComponent(JPanel):
                         if self.parent.bac_parent and hasattr(self.parent.bac_parent, 'role_data'):
                             if idx < len(self.parent.bac_parent.role_data):
                                 self.parent.bac_parent.role_data[idx]["label"] = name
-                                self.save_state()
+                                self.parent.bac_parent.save_state()
     class IgnoreTabSwitchListener(MouseAdapter):
         def mouseClicked(self, evt):
             evt.consume()
@@ -5351,6 +5570,259 @@ def apply_delay_if_needed(service, kind):
     ms = get_delay_ms_for(service, kind)
     if ms and ms > 0:
         time.sleep(ms / 1000.0)
+
+# ---------- Diff / Comparer Dialog ----------
+class DiffDialog(JDialog):
+    def __init__(self, parent, left_title, left_text, right_title, right_text, history=None):
+        JDialog.__init__(self)
+        self._owner = parent
+        self.setTitle("Comparer")
+        self.setModal(False)
+        self.setSize(1300, 700)
+        self.setLayout(BorderLayout())
+        self.history = history or []
+
+        # Top bar
+        top = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
+        self.left_combo = JComboBox([])
+        self.right_combo = JComboBox([])
+        self.left_combo.setPreferredSize(Dimension(360, 24))
+        self.right_combo.setPreferredSize(Dimension(360, 24))
+        self.percent_lbl = JLabel(" ")
+        pick_btn = JButton("Load Selected", actionPerformed=lambda e: self.load_from_dropdowns())
+        top.add(JLabel("Left:"));  top.add(self.left_combo)
+        top.add(JLabel("Right:")); top.add(self.right_combo)
+        top.add(pick_btn); top.add(self.percent_lbl)
+        self.add(top, BorderLayout.NORTH)
+        top.revalidate(); top.repaint()
+
+        # Legend / key panel at bottom
+        legend = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
+        self.add(legend, BorderLayout.SOUTH)
+        legend.revalidate(); legend.repaint()
+        legend.doLayout()
+        legend.revalidate()
+        legend.repaint()
+
+        def make_label(txt, bg):
+            lbl = JLabel(txt)
+            lbl.setOpaque(True)
+            lbl.setBackground(bg)
+            lbl.setForeground(Color.BLACK)
+            lbl.setBorder(LineBorder(Color.DARK_GRAY, 1))
+            return lbl
+
+        legend.add(JLabel("Key:"))
+        legend.add(make_label("Modified", Color(255, 200, 150)))  # orange-ish
+        legend.add(make_label("Deleted", Color(150, 200, 255)))   # blue-ish
+        legend.add(make_label("Added",   Color(255, 255, 150)))   # yellow
+
+        self.add(legend, BorderLayout.SOUTH)
+        # Editors
+        self.left_area  = JTextArea();  self.left_area.setEditable(False);  self.left_area.setLineWrap(True);  self.left_area.setWrapStyleWord(True)
+        self.right_area = JTextArea();  self.right_area.setEditable(False); self.right_area.setLineWrap(True); self.right_area.setWrapStyleWord(True)
+        left_scroll  = JScrollPane(self.left_area)
+        right_scroll = JScrollPane(self.right_area)
+        split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left_scroll, right_scroll)
+        split.setResizeWeight(0.5)
+        self.add(split, BorderLayout.CENTER)
+
+        # Sync vertical scroll
+        self._sync_flag = [False]
+
+
+        # Sync vertical scroll
+        self._sync_flag = [False]
+        def sync(src, dst):
+            if self._sync_flag[0]: return
+            self._sync_flag[0] = True
+            try:
+                dst.getVerticalScrollBar().setValue(src.getVerticalScrollBar().getValue())
+            finally:
+                self._sync_flag[0] = False
+        left_scroll.getVerticalScrollBar().addAdjustmentListener(lambda e: sync(left_scroll, right_scroll))
+        right_scroll.getVerticalScrollBar().addAdjustmentListener(lambda e: sync(right_scroll, left_scroll))
+
+        # Initial content
+        self.set_texts(left_title, left_text, right_title, right_text)
+        def _fix_layout():
+            try:
+                # compute preferred sizes and lay out once dialog is displayable
+                self.pack()                     # let Swing compute proper sizes
+                # keep your intended size (wider than preferred), so pack doesn't shrink it
+                self.setSize(1000, 650)
+                self.validate()
+                self.repaint()
+            except:
+                pass
+        SwingUtilities.invokeLater(_fix_layout)
+        # Populate dropdowns
+        try:
+            items = []
+            for i, ent in enumerate(self.history):
+                if getattr(ent, "resp_bytes", None) is None:
+                    continue
+                title = "%d. %s" % (i+1, (self._owner.summarize_entry(ent) if hasattr(parent, "summarize_entry") else ("Entry #%d" % (i+1))))
+                items.append((i, title))
+            def fill(combo):
+                combo.removeAllItems()
+                for i, title in items:
+                    combo.addItem(title)
+            fill(self.left_combo)
+            fill(self.right_combo)
+            # keep (history_index, title) and a fast index->position map
+            self._items = items                       # [(hist_idx, "N. title"), ...]
+            self._pos_by_hist_idx = {i: pos for pos, (i, _t) in enumerate(items)}
+        except Exception as e:
+            try:
+                print("[Comparer] dropdown fill:", e)
+            except:
+                pass
+
+    def set_texts(self, left_title, left_text, right_title, right_text):
+        try:
+            lt = left_text or ""
+            rt = right_text or ""
+            self.left_area.setText(lt)
+            self.right_area.setText(rt)
+
+            import difflib, re as _re
+            a = _re.findall(r"\w+|\W", lt)
+            b = _re.findall(r"\w+|\W", rt)
+            ratio = difflib.SequenceMatcher(None, a, b).ratio()
+            self.percent_lbl.setText("%d%%" % int(round(ratio * 100)))
+
+            # word-diff highlighting
+            self._highlight_diffs(lt, rt)
+        except Exception as e:
+            try:
+                self.percent_lbl.setText(" ")
+                # best-effort: clear highlights if any
+                self.left_area.getHighlighter().removeAllHighlights()
+                self.right_area.getHighlighter().removeAllHighlights()
+            except:
+                pass
+
+    def _token_spans(self, s):
+        # returns (tokens, spans) where spans[i] = (start, end) in char offsets
+        import re
+        spans = []
+        toks = []
+        for m in re.finditer(r"\w+|\W", s):
+            toks.append(m.group(0))
+            spans.append((m.start(), m.end()))
+        return toks, spans
+
+    def _highlight_diffs(self, left_text, right_text):
+        try:
+            
+
+            # Clear existing highlights
+            self.left_area.getHighlighter().removeAllHighlights()
+            self.right_area.getHighlighter().removeAllHighlights()
+
+            ltoks, lspans = self._token_spans(left_text)
+            rtoks, rspans = self._token_spans(right_text)
+
+            sm = difflib.SequenceMatcher(None, ltoks, rtoks)
+            ops = sm.get_opcodes()
+
+            # Painters
+            rep_p = DefaultHighlighter.DefaultHighlightPainter(Color(255, 200, 150))  # orange (modified)
+            del_p = DefaultHighlighter.DefaultHighlightPainter(Color(150, 200, 255))  # blue (deleted from left)
+            ins_p = DefaultHighlighter.DefaultHighlightPainter(Color(255, 255, 150))  # yellow (added on right)
+
+            lhl = self.left_area.getHighlighter()
+            rhl = self.right_area.getHighlighter()
+
+            for tag, i1, i2, j1, j2 in ops:
+                if tag == "equal":
+                    continue
+
+                # helper to add a range highlight safely
+                def add_hl(area_hl, painter, spans, a, b):
+                    if a < b and a >= 0 and b <= len(spans):
+                        start = spans[a][0]
+                        end   = spans[b-1][1]
+                        if end > start:
+                            area_hl.addHighlight(start, end, painter)
+
+                if tag == "delete":
+                    add_hl(lhl, del_p, lspans, i1, i2)
+
+                elif tag == "insert":
+                    add_hl(rhl, ins_p, rspans, j1, j2)
+
+                elif tag == "replace":
+                    add_hl(lhl, rep_p, lspans, i1, i2)
+                    add_hl(rhl, rep_p, rspans, j1, j2)
+        except:
+            # best-effort: ignore highlighting errors
+            pass
+
+    def load_from_dropdowns(self):
+        try:
+            li = self._parse_idx(self.left_combo.getSelectedItem())
+            ri = self._parse_idx(self.right_combo.getSelectedItem())
+            lt = self._extract_body(self.history[li]) if li is not None else ""
+            rt = self._extract_body(self.history[ri]) if ri is not None else ""
+            self.set_texts("Hist #%d" % (li+1 if li is not None else -1), lt,
+                           "Hist #%d" % (ri+1 if ri is not None else -1), rt)
+        except Exception as e:
+            try:
+                print("[Comparer] load selected:", e)
+            except:
+                pass
+
+    def select_history_pair(self, left_idx, right_idx):
+        try:
+            lp = self._pos_by_hist_idx.get(left_idx)
+            rp = self._pos_by_hist_idx.get(right_idx)
+
+            # Prefer setting by index (robust), fallback to matching item text
+            if lp is not None:
+                self.left_combo.setSelectedIndex(lp)
+            else:
+                # try to match by title text "N. ..."
+                for pos, (i, t) in enumerate(self._items):
+                    if i == left_idx:
+                        self.left_combo.setSelectedItem(t); break
+
+            if rp is not None:
+                self.right_combo.setSelectedIndex(rp)
+            else:
+                for pos, (i, t) in enumerate(self._items):
+                    if i == right_idx:
+                        self.right_combo.setSelectedItem(t); break
+
+            # load bodies into editors + update %
+            self.load_from_dropdowns()
+        except Exception as e:
+            try:
+                print("[Comparer] select_history_pair:", e)
+            except:
+                pass
+
+    def _parse_idx(self, s):
+        try:
+            # s looks like "5. User GET …"
+            return int(str(s).split(".",1)[0]) - 1
+        except:
+            return None
+
+    def _extract_body(self, entry):
+        try:
+            info = self._owner.helpers.analyzeResponse(entry.resp_bytes)
+            body_off = info.getBodyOffset()
+            raw = bytearray(entry.resp_bytes)
+            return self._owner.helpers.bytesToString(raw[body_off:])
+        except:
+            try:
+                return self._owner.helpers.bytesToString(bytearray(entry.resp_bytes))
+            except:
+                return ""
+
+
 # ---------- Rules Dialog ----------
 class RulesDialog(JDialog):
     def __init__(self, parent, host, available_headers, callbacks):

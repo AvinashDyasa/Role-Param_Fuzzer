@@ -5046,11 +5046,54 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
     def _extract_body_text(self, resp_bytes):
         try:
             info = self.helpers.analyzeResponse(resp_bytes)
+            headers = list(info.getHeaders() or [])
             body_off = info.getBodyOffset()
             raw = bytearray(resp_bytes)
-            return self.helpers.bytesToString(raw[body_off:]) if body_off is not None else self.helpers.bytesToString(raw)
+            body = bytes(raw[body_off:]) if body_off is not None else bytes(raw)
+
+            # detect encodings/types
+            enc = ""; ctype = ""
+            for h in headers:
+                hl = h.lower()
+                if hl.startswith("content-encoding:"):
+                    enc = hl.split(":", 1)[1].strip()
+                elif hl.startswith("content-type:"):
+                    ctype = hl.split(":", 1)[1].strip()
+
+            # charset
+            import re as _re
+            charset = "utf-8"
+            m = _re.search(r"charset=([A-Za-z0-9_\-]+)", ctype or "")
+            if m:
+                charset = m.group(1)
+
+            # decompress if needed
+            try:
+                if "gzip" in enc:
+                    import gzip, io
+                    body = gzip.GzipFile(fileobj=io.BytesIO(body)).read()
+                elif "deflate" in enc:
+                    import zlib
+                    try:
+                        body = zlib.decompress(body)
+                    except:
+                        body = zlib.decompress(body, -zlib.MAX_WBITS)
+            except:
+                pass
+
+            # decode to text (wrap-friendly)
+            try:
+                return body.decode(charset, "replace")
+            except:
+                try:
+                    return body.decode("utf-8", "replace")
+                except:
+                    return body.decode("latin-1", "replace")
         except:
-            return None
+            try:
+                return self.helpers.bytesToString(bytearray(resp_bytes))
+            except:
+                return u"<<Failed to parse body>>"
 
     def open_compare_dialog_with_control(self):
         try:
@@ -5866,8 +5909,7 @@ class DiffDialog(JDialog):
             self._highlight_diffs(lt, rt)
         except Exception as e:
             try:
-                self.percent_lbl.setText(" ")
-                # best-effort: clear highlights if any
+                # keep existing percentage even if highlighting fails
                 self.left_area.getHighlighter().removeAllHighlights()
                 self.right_area.getHighlighter().removeAllHighlights()
             except:
@@ -5982,15 +6024,63 @@ class DiffDialog(JDialog):
 
     def _extract_body(self, entry):
         try:
-            info = self._owner.helpers.analyzeResponse(entry.resp_bytes)
+            if entry is None or getattr(entry, "resp_bytes", None) is None:
+                return u""
+
+            helpers = self._owner.helpers
+            info = helpers.analyzeResponse(entry.resp_bytes)
+            headers = list(info.getHeaders() or [])
             body_off = info.getBodyOffset()
+
             raw = bytearray(entry.resp_bytes)
-            return self._owner.helpers.bytesToString(raw[body_off:])
+            body = bytes(raw[body_off:]) if (body_off is not None and body_off >= 0) else bytes(raw)
+
+            enc = ""; ctype = ""
+            for h in headers:
+                hl = h.lower()
+                if hl.startswith("content-encoding:"):
+                    enc = hl.split(":", 1)[1].strip()
+                elif hl.startswith("content-type:"):
+                    ctype = hl.split(":", 1)[1].strip()
+
+            import re as _re
+            charset = "utf-8"
+            m = _re.search(r"charset=([A-Za-z0-9_\-]+)", ctype or "")
+            if m:
+                charset = m.group(1)
+
+            try:
+                if "gzip" in enc:
+                    import gzip, io
+                    body = gzip.GzipFile(fileobj=io.BytesIO(body)).read()
+                elif "deflate" in enc:
+                    import zlib
+                    try:
+                        body = zlib.decompress(body)
+                    except:
+                        body = zlib.decompress(body, -zlib.MAX_WBITS)
+            except:
+                pass
+
+            textish = any(x in (ctype or "") for x in ["text", "json", "xml", "javascript"])
+            if textish:
+                try:
+                    return body.decode(charset, "replace")
+                except:
+                    try:
+                        return body.decode("utf-8", "replace")
+                    except:
+                        return helpers.bytesToString(body)
+            else:
+                try:
+                    return body.decode(charset, "replace")
+                except:
+                    return u"<<Non-text content (%s), %d bytes>>" % (ctype or "unknown", len(body))
         except:
             try:
-                return self._owner.helpers.bytesToString(bytearray(entry.resp_bytes))
+                return self._owner.helpers.bytesToString(entry.resp_bytes)
             except:
-                return ""
+                return u"<<Failed to parse body>>"
 
 
 # ---------- Rules Dialog ----------

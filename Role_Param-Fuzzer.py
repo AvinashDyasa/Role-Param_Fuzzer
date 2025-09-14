@@ -218,17 +218,35 @@ def _merge_cookie_values_only(existing_cookie_str, new_cookie_map):
     """
     Replace ONLY values of cookies that already exist in the header.
     Do NOT add new cookies.
+
+    Lock rule: if a cookie name in the existing header starts with '!' (e.g., '!csrftoken'),
+    its value will NOT be updated by merges (Cookie Editor paste or auto-refresh).
+    The leading '!' is preserved in storage but stripped before sending the request.
     """
     pairs = _parse_cookie_header_string(existing_cookie_str)
     out_pairs = []
-    for name, val in pairs:
-        if name in new_cookie_map:
-            # Replace only the value part; keep as-is formatting for '=' and ordering
-            out_pairs.append((name, new_cookie_map[name]))
+    for raw_name, val in pairs:
+        locked = raw_name.startswith('!')
+        base_name = raw_name[1:] if locked else raw_name
+
+        if (not locked) and (base_name in new_cookie_map):
+            out_pairs.append((raw_name, new_cookie_map[base_name]))
         else:
-            out_pairs.append((name, val))
-    # Re-join with '; ' (common formatting)
+            out_pairs.append((raw_name, val))
+
     return '; '.join(['{}={}'.format(n, v) if v != "" else n for n, v in out_pairs])
+
+def _strip_cookie_locks(cookie_str):
+    """
+    Remove leading '!' from cookie NAMES in a Cookie header string.
+    """
+    pairs = _parse_cookie_header_string(cookie_str or "")
+    cleaned = []
+    for n, v in pairs:
+        if n.startswith('!'):
+            n = n[1:]
+        cleaned.append((n, v))
+    return '; '.join(['{}={}'.format(n, v) if v != "" else n for n, v in cleaned])
 
 def _cookie_editor_json_to_map(text):
     """
@@ -4676,9 +4694,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             elif mode == "modify" and hn_lc == "cookie":
                                 existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
                                 new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
+                                new_val = _strip_cookie_locks(new_val)
                                 changed_at[i] = "%s: %s" % (hn_stripped, new_val)
                                 used.add(hn_lc)
                             else:
+                                if hn_lc == "cookie":
+                                    rvalue = _strip_cookie_locks(rvalue)
                                 changed_at[i] = "%s: %s" % (hn_stripped, rvalue)
                                 used.add(hn_lc)
                         # else untouched

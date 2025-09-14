@@ -5398,11 +5398,12 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
 
 # ---------- Tab Decorators ----------
 class ClosableTabComponent(JPanel):
-    def __init__(self, tabs, tab_panel, title, bac_parent=None, role_idx=None):
+    def __init__(self, tabs, tab_panel, title, bac_parent=None, role_idx=None, extender=None):
         JPanel.__init__(self)
         self.tabs = tabs
         self.tab_panel = tab_panel
         self.bac_parent = bac_parent   # Use this instead of .parent!
+        self.extender = extender
         self.setOpaque(False)
         self.setLayout(FlowLayout(FlowLayout.LEFT, 0, 0))
         self.role_idx = role_idx
@@ -5435,11 +5436,27 @@ class ClosableTabComponent(JPanel):
                 idx = self.tabs.indexOfComponent(self.tab_panel)
                 plus_idx = self.tabs.getTabCount() - 1
                 if idx != -1 and idx < plus_idx:
+                    # If this is a fuzz tab (no BAC parent), push to reopen stack BEFORE removing
+                    if self.bac_parent is None and getattr(self, 'extender', None) is not None:
+                        try:
+                            info = {
+                                "component": self.tab_panel,
+                                "title": self.tabs.getTitleAt(idx),
+                                "index": idx
+                            }
+                            self.extender.closed_fuzz_tabs_stack.append(info)
+                        except Exception:
+                            pass
                     self.tabs.remove(idx)
                     if self.bac_parent and hasattr(self.bac_parent, 'role_data'):
                         if idx < len(self.bac_parent.role_data):
                             del self.bac_parent.role_data[idx]
                             self.bac_parent.save_state()
+                    elif getattr(self, 'extender', None) is not None:
+                        try:
+                            self.extender.save_all_tabs_state()
+                        except Exception:
+                            pass
         self.close_button.addActionListener(CloseListener())
         self.add(self.close_button)
         # Mouse listener for switching/renaming
@@ -5471,8 +5488,18 @@ class ClosableTabComponent(JPanel):
             popup.add(dup_item)
             self.setComponentPopupMenu(popup)
         else:
-            # No context menu on non-role (fuzz) tabs
-            self.setComponentPopupMenu(None)
+            # Context menu for fuzz tabs: Reopen last closed tab
+            popup = JPopupMenu()
+            reopen_item = JMenuItem("Reopen tab")
+            def do_reopen(evt=None):
+                try:
+                    if getattr(self, 'extender', None) is not None:
+                        self.extender.reopen_last_closed_fuzz_tab()
+                except Exception as e:
+                    print("Reopen tab failed:", e)
+            reopen_item.addActionListener(lambda e: do_reopen())
+            popup.add(reopen_item)
+            self.setComponentPopupMenu(popup)
 
     def set_checkbox_state(self, checked):
         if self.enable_checkbox is not None:
@@ -6298,7 +6325,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         callbacks.setExtensionName("Role-Parameter_Fuzzer")
         # callbacks._parent_extender = self
 
+        # stack of recently-closed fuzz tabs (LIFO)
+        self.closed_fuzz_tabs_stack = []
+
         self.tabs = JTabbedPane()
+
         self.tabs.addChangeListener(self.on_tab_switched)
         
         # The main panel for the extension
@@ -6404,7 +6435,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         tab_panel = FuzzerPOCTab(self._helpers, self._callbacks, base_message, self.save_all_tabs_state, parent_extender=self)
         insert_at = self.tabs.getTabCount() - 1
         self.tabs.insertTab(tab_name, None, tab_panel, None, insert_at)
-        self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, tab_panel, tab_name))
+        self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, tab_panel, tab_name, extender=self))
         self.tabs.setSelectedComponent(tab_panel)
         # For new tabs, explicitly call the visibility function to set initial state
         tab_panel.on_gaining_visibility()
@@ -6448,9 +6479,25 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         insert_at = self.tabs.getTabCount() - 1
         tab_name = tab_data.get("tab_name", str(insert_at + 1))
         self.tabs.insertTab(tab_name, None, tab_panel, None, insert_at)
-        self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, tab_panel, tab_name))
+        self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, tab_panel, tab_name, extender=self))
         self.tabs.setSelectedComponent(tab_panel)
         self.save_all_tabs_state()
+
+    def reopen_last_closed_fuzz_tab(self):
+        try:
+            if not getattr(self, "closed_fuzz_tabs_stack", None):
+                JOptionPane.showMessageDialog(self.main_panel, "No recently closed tabs to reopen.")
+                return
+            info = self.closed_fuzz_tabs_stack.pop()
+            insert_at = min(info.get("index", self.tabs.getTabCount()-1), self.tabs.getTabCount()-1)
+            comp = info.get("component")
+            title = info.get("title", "Restored")
+            self.tabs.insertTab(title, None, comp, None, insert_at)
+            self.tabs.setTabComponentAt(insert_at, ClosableTabComponent(self.tabs, comp, title, extender=self))
+            self.tabs.setSelectedIndex(insert_at)
+            self.save_all_tabs_state()
+        except Exception as e:
+            JOptionPane.showMessageDialog(self.main_panel, "Error reopening tab:\n" + str(e))
 
     def mergeExportTabsForImport(self, event):
         try:

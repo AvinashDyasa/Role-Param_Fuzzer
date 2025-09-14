@@ -51,7 +51,12 @@ def _apply_cookie_modify(existing_cookie, modify_pairs_raw, add_missing=False):
       - Cond. Delete: "-e=5"           -> remove cookie 'e' only if its current value is '5'
       - Multiple: "c=33; -e; -x=abc"   -> combine ops (order doesn't matter)
 
-    existing_cookie: e.g. "a=1; b=2; c=3; d=4; e=5"
+    Lock rule:
+      - If an EXISTING cookie name starts with '!' (e.g., '!session'), it is LOCKED:
+        it cannot be modified or deleted here.
+      - Name matching for set/delete uses the base name (without leading '!').
+
+    existing_cookie: e.g. "a=1; !b=2; c=3; d=4; e=5"
     """
     def _parse_cookie(s):
         out = []
@@ -63,41 +68,42 @@ def _apply_cookie_modify(existing_cookie, modify_pairs_raw, add_missing=False):
                 k, v = kv.split("=", 1)
                 out.append([k.strip(), v.strip()])
             else:
-                # flag-like cookie; keep as-is
-                out.append([kv.strip(), None])
+                out.append([kv.strip(), None])  # flag-like cookie; keep as-is
         return out
 
-    def _to_map(pairs):
-        m = {}
-        for k, v in pairs:
-            if k:
-                m[k] = v
-        return m
+    def _base_name(name):
+        if not name:
+            return name
+        return name[1:] if name.startswith("!") else name
 
     base_pairs = _parse_cookie(existing_cookie or "")
 
     # Split directives into set-mods and delete rules
     raw_pairs = _parse_cookie(modify_pairs_raw or "")
-    set_pairs = []
-    delete_rules = {}  # name -> None (unconditional) or value string (conditional)
+    set_map = {}          # base_name -> (orig_key_from_directive, value)
+    delete_rules = {}     # base_name -> None (unconditional) or value string (conditional)
+
     for k, v in raw_pairs:
         if k.startswith("-"):
             name = k[1:].strip()
             if not name:
                 continue
-            delete_rules[name] = v  # v may be None (means unconditional), or a string for equality-match
+            delete_rules[_base_name(name)] = v
         else:
-            set_pairs.append([k, v])
+            set_map[_base_name(k)] = (k, v)
 
-    set_map = _to_map(set_pairs)
-
-    # Apply: iterate once to handle deletes and sets in-place
+    # Apply: iterate once to handle deletes and sets in-place (respect locks)
     out_pairs = []
-    seen = set()
-    for (k, v) in base_pairs:
+    existing_base_names = set()
+
+    for (raw_k, v) in base_pairs:
+        locked = raw_k.startswith("!")
+        base_k = _base_name(raw_k)
+        existing_base_names.add(base_k)
+
         # Deletion?
-        if k in delete_rules:
-            cond_val = delete_rules[k]
+        if (base_k in delete_rules) and (not locked):
+            cond_val = delete_rules[base_k]
             if cond_val is None:
                 # unconditional remove
                 continue
@@ -105,25 +111,24 @@ def _apply_cookie_modify(existing_cookie, modify_pairs_raw, add_missing=False):
                 # remove only if current value matches
                 if (v is None and cond_val == "") or (v is not None and v == cond_val):
                     continue
-        # Set/modify?
-        if k in set_map:
-            v = set_map[k]
-            seen.add(k)
-        out_pairs.append([k, v])
 
-    # Append any set keys that weren't present originally
+        # Set/modify?
+        if (base_k in set_map) and (not locked):
+            _, new_v = set_map[base_k]
+            v = new_v
+
+        out_pairs.append([raw_k, v])
+
+    # Append any set keys that weren't present originally (by base name)
     if add_missing:
-        for k, v in set_map.items():
-            if k not in seen:
-                out_pairs.append([k, v])
+        for base_k, (orig_key, val) in set_map.items():
+            if base_k not in existing_base_names:
+                out_pairs.append([orig_key, val])
 
     # Re-serialize
     parts = []
     for k, v in out_pairs:
-        if v is None:
-            parts.append(k)
-        else:
-            parts.append("%s=%s" % (k, v))
+        parts.append(k if v is None else ("%s=%s" % (k, v)))
     return "; ".join(parts)
 
 

@@ -1670,7 +1670,7 @@ class BACCheckPanel(JPanel):
         # Used for initial load - appends at end before "+" tab
         plus_idx = self.role_tabs.getTabCount()  # always last
         role_label = label or "Role %d" % (len(self.role_data) + 1)
-        role_cfg = config if config else {
+        role_cfg = deepcopy(config) if config else {
             "label": role_label,
             "headers": [{"header": "", "value": ""}],
             "extra_enabled": False,
@@ -1694,7 +1694,7 @@ class BACCheckPanel(JPanel):
         # Used when "+" clicked - appends to end before "+" tab, always matches role_data order!
         plus_idx = self.role_tabs.getTabCount() - 1
         role_label = label or "Role %d" % (len(self.role_data) + 1)
-        role_cfg = config if config else {
+        role_cfg = deepcopy(config) if config else {
             "label": role_label,
             "headers": [{"header": "", "value": ""}],
             "extra_enabled": False,
@@ -5383,28 +5383,32 @@ class ClosableTabComponent(JPanel):
         self.addMouseListener(self.TabMouseListener(self))
         self.close_button.addMouseListener(self.IgnoreTabSwitchListener())
 
-        # Add right-click context menu for Duplicate Role
-        popup = JPopupMenu()
-        dup_item = JMenuItem("Duplicate Role")
-        def do_duplicate(evt=None):
-            try:
-                idx = self.tabs.indexOfComponent(self.tab_panel)
-                if idx != -1 and self.bac_parent and hasattr(self.bac_parent, 'role_data'):
-                    role_cfg = dict(self.bac_parent.role_data[idx])  # copy role config
-                    base_label = role_cfg.get("label", "Role")
-                    new_label = base_label
-                    suffix = 2
-                    existing_labels = [r.get("label", "") for r in self.bac_parent.role_data]
-                    while new_label in existing_labels:
-                        new_label = base_label + " " + str(suffix)
-                        suffix += 1
-                    role_cfg["label"] = new_label
-                    self.bac_parent.add_role_tab(label=new_label, config=role_cfg)
-            except Exception as e:
-                print("Duplicate role failed:", e)
-        dup_item.addActionListener(do_duplicate)
-        popup.add(dup_item)
-        self.setComponentPopupMenu(popup)
+        # Add right-click context menu for Duplicate Role (only on Role tabs)
+        if self.bac_parent is not None:
+            popup = JPopupMenu()
+            dup_item = JMenuItem("Duplicate Role")
+            def do_duplicate(evt=None):
+                try:
+                    idx = self.tabs.indexOfComponent(self.tab_panel)
+                    if idx != -1 and hasattr(self.bac_parent, 'role_data'):
+                        role_cfg = deepcopy(self.bac_parent.role_data[idx])  # deep copy to avoid shared headers/cookies
+                        base_label = role_cfg.get("label", "Role")
+                        new_label = base_label
+                        suffix = 2
+                        existing_labels = [r.get("label", "") for r in self.bac_parent.role_data]
+                        while new_label in existing_labels:
+                            new_label = base_label + " " + str(suffix)
+                            suffix += 1
+                        role_cfg["label"] = new_label
+                        self.bac_parent.add_role_tab(label=new_label, config=role_cfg)
+                except Exception as e:
+                    print("Duplicate role failed:", e)
+            dup_item.addActionListener(do_duplicate)
+            popup.add(dup_item)
+            self.setComponentPopupMenu(popup)
+        else:
+            # No context menu on non-role (fuzz) tabs
+            self.setComponentPopupMenu(None)
 
     def set_checkbox_state(self, checked):
         if self.enable_checkbox is not None:

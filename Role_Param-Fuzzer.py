@@ -4405,10 +4405,13 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                                 elif mode == "modify" and hname_lc == "cookie":
                                     existing_val = h.split(":", 1)[1].strip() if ":" in h else ""
                                     new_val = _apply_cookie_modify(existing_val, rvalue, add_missing=bool(role.get("force", False)))
+                                    new_val = _strip_cookie_locks(new_val)
                                     changed_at[i] = "%s: %s" % (hname_stripped, new_val)
                                     used_headers.add(hname_lc)
                                 else:
-                                    # replace / modify (non-cookie)
+                                    # replace / modify
+                                    if hname_lc == "cookie":
+                                        rvalue = _strip_cookie_locks(rvalue)
                                     changed_at[i] = "%s: %s" % (hname_stripped, rvalue)
                                     used_headers.add(hname_lc)
                             # else: untouched
@@ -4421,7 +4424,10 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                             if rule.get("mode", "replace") == "delete":
                                 continue
                             if hname_lc not in used_headers:
-                                additions.append("%s: %s" % (hname_lc, rule.get("value", "")))
+                                val = rule.get("value", "")
+                                if hname_lc == "cookie":
+                                    val = _strip_cookie_locks(val)
+                                additions.append("%s: %s" % (hname_lc, val))
 
                     # Extra header behaves like an addition but should not duplicate existing
                     if role.get('extra_enabled') and role.get('extra_name'):

@@ -3581,7 +3581,7 @@ class FuzzerPOCTab(JPanel, IMessageEditorController):
                     pass
         # Default payloads
         url_payloads = ["null", "*", "'+OR+1=1 --", "<script>alert(1)</script>"]
-        body_payloads = ["=null", "*", "%3Ch1%3EHTML%20Injection%3C%2Fh1%3E", "%3Cimage%2Fsrc%2Fonerror%3Dprompt%288%29%3E", "1%27%20%7C%7C%20pg_sleep%2810%29", "%24%28%60cat%20%2Fetc%2Fpasswd%60%29"]
+        body_payloads = ["null", "*", "%3Ch1%3EHTML%20Injection%3C%2Fh1%3E", "%3Cimage%2Fsrc%2Fonerror%3Dprompt%288%29%3E", "1%27%20%7C%7C%20pg_sleep%2810%29", "%24%28%60cat%20%2Fetc%2Fpasswd%60%29"]
         return url_params, url_payloads, body_params, body_payloads
 
     # IMessageEditorController methods
